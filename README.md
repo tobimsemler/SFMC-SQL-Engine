@@ -90,3 +90,12 @@ const { tables } = sqlEngine.analyse(sql);
 ```bash
 node --test
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, fork it, modify it, ship it.
+
+## Disclaimer
+
+This is an independent, backwards-engineered reimplementation of SQL parsing and evaluation behaviour, built by observing how Salesforce Marketing Cloud's Query Studio behaves. It is not affiliated with, endorsed by, or sponsored by Salesforce, Inc. "Salesforce Marketing Cloud" and "SFMC" are trademarks of Salesforce, Inc.; they are used here only to describe compatibility, not to imply an official relationship. No Salesforce source code, confidential material, or proprietary documentation was used to build this project. The engine is provided "as is" with no guarantee that its output matches Query Studio in every case — always validate results against your own environment before relying on them.
+
