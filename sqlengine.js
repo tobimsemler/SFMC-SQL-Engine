@@ -1,26 +1,23 @@
 /*
- * src/sqlengine.js — a self-contained, read-only SQL engine.
+ * sqlengine.js — a backwards-engineered, read-only SQL engine.
  *
- * This is the "Query Studio Local" execution core. It parses an SFMC-flavoured
- * SELECT statement and evaluates it against row sets that have already been
- * read out of Marketing Cloud, entirely inside this browser tab.
- *
- * Why it exists: SFMC has no endpoint that takes SQL and returns rows. The
- * real Query Studio creates a Query Activity, starts it, reads a temporary
- * target Data Extension and deletes it again — three write operations that
- * policy.js blocks by design. Running the SELECT locally gives the same
- * answers for the everyday cases without SFMC being written to at all.
+ * SFMC's Query Studio has no API: there is no endpoint that takes a SELECT
+ * statement and returns rows. The only official path is to create a Query
+ * Activity, start it, read the temporary target Data Extension it writes to,
+ * then delete it again. This module reproduces the read behaviour of that
+ * SELECT engine directly, in plain JavaScript, against row sets already
+ * supplied by the caller — no Query Activity, no temporary Data Extension,
+ * no writes.
  *
  * Deliberate properties:
  *   - No eval(), no new Function(), no WASM. The parser is hand-written, so
- *     nothing here can be turned into an arbitrary-code sink, and it works
- *     under the MV3 content-script CSP.
- *   - No network access. This module never touches api.js. Rows come in as
- *     plain arrays from the caller.
+ *     nothing here can be turned into an arbitrary-code sink.
+ *   - No network access. This module never talks to Marketing Cloud. Rows
+ *     come in as plain arrays from the caller.
  *   - Only SELECT is representable. There is no AST node for INSERT, UPDATE
  *     or DELETE, so an unsupported statement cannot be parsed, let alone run.
  *
- * Loadable both as a content script and as a CommonJS module, so the parser
+ * Loadable both as a browser script and as a CommonJS module, so the parser
  * and evaluator can be unit tested under `node --test`.
  */
 
@@ -28,8 +25,7 @@
   const engine = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = engine;
   if (root) {
-    root.SFMCScout = root.SFMCScout || {};
-    root.SFMCScout.sqlEngine = engine;
+    root.SqlEngine = engine;
   }
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
@@ -627,9 +623,9 @@
     /*
      * Recursive descent means nesting depth is stack depth. Without a guard,
      * "((((((...))))))" a few thousand deep throws a RangeError, which reaches
-     * the user as "Maximum call stack size exceeded" — indistinguishable from
-     * the extension crashing. A depth counter turns it into a normal SqlError
-     * with the position of the offending expression.
+     * the user as an opaque "Maximum call stack size exceeded". A depth
+     * counter turns it into a normal SqlError with the position of the
+     * offending expression.
      */
     let depth = 0;
 
