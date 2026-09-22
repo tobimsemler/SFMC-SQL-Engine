@@ -1170,7 +1170,7 @@
       }
 
       if (c === '%') {
-        // Collapse runs of "%" so "%%%%" costs the same as "%".
+        // Collapse runs of the "%" wildcard so several in a row cost the same as one.
         if (elements.length && elements[elements.length - 1].kind === 'any') continue;
         elements.push({ kind: 'any' });
         continue;
