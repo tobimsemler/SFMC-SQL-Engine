@@ -92,12 +92,58 @@
   tbody tr:hover { background: #fafbfc; }
   .result-scroll { max-height: 480px; overflow: auto; border: 1px solid #d0d7de; border-radius: 6px; }
   .empty-note { font-size: 13px; color: #57606a; padding: 12px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #d0d7de; }
+  .tab-btn {
+    border: none;
+    background: transparent;
+    border-radius: 6px 6px 0 0;
+    padding: 8px 16px;
+    font-size: 13px;
+    color: #57606a;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab-btn:hover { background: #eef1f4; }
+  .tab-btn.active { color: #1b1f23; font-weight: 600; border-bottom-color: #1a7f37; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .result-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .server-note { font-size: 11px; color: #8b949e; margin: 0 0 16px; }
+  .ref h3 { font-size: 15px; margin: 20px 0 6px; }
+  .ref h4 { font-size: 13px; margin: 14px 0 4px; color: #24292f; }
+  .ref p, .ref li { font-size: 13px; line-height: 1.55; color: #24292f; }
+  .ref code { background: #f6f8fa; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .ref table { margin: 8px 0 16px; }
+  .ref table th, .ref table td { border: 1px solid #eaeef2; padding: 6px 10px; font-size: 12.5px; }
+  .ref .note { background: #fff8dd; border: 1px solid #eed88b; border-radius: 6px; padding: 8px 10px; font-size: 12.5px; margin: 10px 0; }
+  .ref pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .ref pre code { background: transparent; padding: 0; }
 </style>
 </head>
 <body>
 
 <h1>SQL Engine — CSV Query Sandbox</h1>
 <p class="subtitle">Upload CSV exports of Data Extensions, then run a SELECT against them. Everything runs locally in this page — nothing is uploaded anywhere.</p>
+<p class="server-note">
+<script runat="server" language="javascript">
+  Platform.Response.Write("Page rendered server-side via SSJS at " + Platform.Function.SystemDateToLocalDate(Now()) + " (local system time).");
+</script>
+</p>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="queryTab">Query</button>
+  <button class="tab-btn" data-tab="aboutTab">About / SQL reference</button>
+</div>
+
+<div id="queryTab" class="tab-panel active">
 
 <div class="card">
   <h2>Datasets</h2>
@@ -115,8 +161,108 @@
 </div>
 
 <div class="card">
-  <h2>Result</h2>
+  <div class="result-toolbar">
+    <h2 style="margin:0;">Result</h2>
+    <button id="downloadBtn" style="display:none;">Download result (CSV)</button>
+  </div>
   <div id="resultArea"><p class="empty-note">Run a query to see results here.</p></div>
+</div>
+
+</div>
+
+<div id="aboutTab" class="tab-panel">
+<div class="card ref">
+
+<h3>What this is</h3>
+<p>This page embeds a small, dependency-free JavaScript SQL engine that reimplements the read-only SQL dialect used by Salesforce Marketing Cloud's Query Studio (the SQL that runs inside a Query Activity). It parses and evaluates <code>SELECT</code> statements against CSV data you upload yourself — it never connects to Marketing Cloud and never writes anything back.</p>
+<p class="note">Not affiliated with or endorsed by Salesforce. "Salesforce Marketing Cloud" and "SFMC" are trademarks of Salesforce, Inc. This reference describes documented, publicly known behavior of Query Studio's SQL dialect (Microsoft SQL Server T-SQL, restricted to a read-only subset) for learning purposes.</p>
+
+<h3>Statement structure</h3>
+<p>Query Studio (and this engine) only ever runs a single <code>SELECT</code> statement, optionally preceded by one or more Common Table Expressions. There is no AST/grammar for <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code>, DDL, or stored procedure calls — Marketing Cloud enforces this because a Query Activity's job is to populate a target Data Extension by reading, never to mutate source data extensions.</p>
+<pre><code>[ WITH cte_name [ (col1, col2, ...) ] AS ( SELECT ... ) [, ...] ]
+SELECT [ DISTINCT ] [ TOP (n) [ PERCENT ] ]
+    column_list
+FROM source [ alias ]
+[ INNER | LEFT [OUTER] | RIGHT [OUTER] | FULL [OUTER] | CROSS ] JOIN source [ alias ] [ ON condition ]
+[ WHERE condition ]
+[ GROUP BY column_list ]
+[ HAVING condition ]
+[ ORDER BY column_list [ ASC | DESC ] ]
+[ UNION [ ALL ] SELECT ... ]</code></pre>
+
+<h3>SELECT clause</h3>
+<ul>
+<li><code>SELECT *</code>, <code>SELECT alias.*</code>, or an explicit, comma-separated column list.</li>
+<li><code>DISTINCT</code> removes duplicate output rows (compared across all selected columns).</li>
+<li><code>TOP (n)</code> and <code>TOP (n) PERCENT</code> limit the row count of the *final* result, after ORDER BY. <code>n</code> must be a literal number — not an expression or a subquery.</li>
+<li>Column aliases: <code>expr AS alias</code> or the bare form <code>expr alias</code>. Aliases are needed for computed/aggregate columns if you want to reference them elsewhere (e.g. in ORDER BY by name or ordinal position).</li>
+</ul>
+
+<h3>FROM and JOIN</h3>
+<ul>
+<li>Sources are Data Extension names, optionally schema-qualified (e.g. <code>ENT.SharedDataExtension</code>), each with an optional alias.</li>
+<li>Join types: <code>INNER JOIN</code>, <code>LEFT [OUTER] JOIN</code>, <code>RIGHT [OUTER] JOIN</code>, <code>FULL [OUTER] JOIN</code>, <code>CROSS JOIN</code>. Marketing Cloud's documented guidance caps a query at a limited number of joined objects — this engine enforces the same idea via a configurable <code>maxJoins</code> limit (default 8).</li>
+<li>Derived tables — a subquery in the FROM/JOIN position, e.g. <code>(SELECT ...) AS x</code> — are supported and must be aliased.</li>
+<li>Scalar and correlated subqueries (a <code>SELECT</code> nested inside an expression, or inside <code>IN (...)</code>) are <strong>not</strong> supported by Query Studio's engine; rewrite them as a JOIN. This engine raises an explicit error pointing you at that rewrite instead of silently misbehaving.</li>
+</ul>
+
+<h3>WHERE, HAVING and predicates</h3>
+<ul>
+<li>Comparison operators: <code>=</code>, <code>&lt;&gt;</code> (or <code>!=</code>), <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>.</li>
+<li>Logical operators: <code>AND</code>, <code>OR</code>, <code>NOT</code> (standard T-SQL precedence: NOT binds tighter than AND, which binds tighter than OR).</li>
+<li><code>IS [NOT] NULL</code>, <code>[NOT] LIKE pattern [ESCAPE char]</code>, <code>[NOT] IN (value, value, ...)</code>, <code>[NOT] BETWEEN low AND high</code>.</li>
+<li><code>LIKE</code> wildcards follow T-SQL: <code>%</code> (any run of characters), <code>_</code> (any single character), <code>[set]</code> and <code>[^set]</code> character classes.</li>
+<li><code>HAVING</code> filters after <code>GROUP BY</code>/aggregation, exactly like standard SQL — you cannot filter on an aggregate result in <code>WHERE</code>.</li>
+</ul>
+
+<h3>GROUP BY / ORDER BY</h3>
+<ul>
+<li><code>GROUP BY</code> accepts a comma-separated list of expressions/columns.</li>
+<li><code>ORDER BY</code> accepts column names, expressions, aliases, or 1-based ordinal positions (<code>ORDER BY 2 DESC</code>). Each term takes an optional <code>ASC</code>/<code>DESC</code> (default <code>ASC</code>).</li>
+<li>After a <code>UNION</code>, <code>ORDER BY</code> applies to the combined result and must appear only after the final <code>SELECT</code> — not on an individual branch.</li>
+</ul>
+
+<h3>CASE, CAST and CONVERT</h3>
+<ul>
+<li>Both simple (<code>CASE expr WHEN v THEN ... END</code>) and searched (<code>CASE WHEN cond THEN ... END</code>) forms, with an optional <code>ELSE</code>.</li>
+<li><code>CAST(expr AS type)</code> and <code>CONVERT(type, expr [, style])</code> follow SQL Server's type names (e.g. <code>VARCHAR</code>, <code>INT</code>, <code>DECIMAL(p,s)</code>, <code>DATETIME</code>) and numeric date <code>style</code> codes (e.g. <code>101</code> = <code>MM/DD/YYYY</code>, <code>103</code> = <code>DD/MM/YYYY</code>, <code>120</code>-style ISO forms).</li>
+</ul>
+
+<h3>Aggregate functions</h3>
+<table>
+<tr><th>Function</th><th>Notes</th></tr>
+<tr><td><code>COUNT(*)</code> / <code>COUNT(expr)</code> / <code>COUNT(DISTINCT expr)</code></td><td><code>COUNT(expr)</code> ignores NULLs; <code>COUNT(*)</code> counts all rows in the group.</td></tr>
+<tr><td><code>SUM</code>, <code>AVG</code></td><td>Ignore NULLs; empty/all-NULL input to <code>SUM</code> yields NULL, matching T-SQL.</td></tr>
+<tr><td><code>MIN</code>, <code>MAX</code></td><td>Work across numbers, strings, and dates using the same comparison rules as ORDER BY.</td></tr>
+<tr><td><code>STDEV</code>, <code>STDEVP</code>, <code>VAR</code>, <code>VARP</code></td><td>Sample vs. population variants, exactly as in T-SQL.</td></tr>
+</table>
+
+<h3>Window functions</h3>
+<p><code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and <code>NTILE(n)</code> are supported, each requiring an <code>OVER (...)</code> clause with an optional <code>PARTITION BY</code> and a required/optional <code>ORDER BY</code> depending on the function — again matching T-SQL's rules, since aggregates used as window functions (e.g. <code>SUM(x) OVER (...)</code>) are not part of Query Studio's supported surface and are rejected here too.</p>
+
+<h3>Scalar function reference</h3>
+<table>
+<tr><th>Category</th><th>Functions</th></tr>
+<tr><td>String</td><td><code>LEN</code>, <code>DATALENGTH</code>, <code>LOWER</code>, <code>UPPER</code>, <code>LTRIM</code>, <code>RTRIM</code>, <code>TRIM</code>, <code>REVERSE</code>, <code>SPACE</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>SUBSTRING</code>, <code>REPLACE</code>, <code>CHARINDEX</code>, <code>STUFF</code></td></tr>
+<tr><td>Null handling</td><td><code>ISNULL(expr, fallback)</code>, <code>NULLIF(a, b)</code></td></tr>
+<tr><td>Math</td><td><code>ABS</code>, <code>CEILING</code>, <code>FLOOR</code>, <code>SIGN</code>, <code>SQRT</code>, <code>POWER</code>, <code>ROUND</code></td></tr>
+<tr><td>Date/time</td><td><code>GETDATE</code>, <code>GETUTCDATE</code>, <code>SYSDATETIME</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>DATEPART</code>, <code>DATEADD</code>, <code>DATEDIFF</code>, <code>DATENAME</code></td></tr>
+</table>
+<p><code>DATEADD</code> clamps at month-end boundaries the same way SQL Server does (e.g. adding a month to Jan 31 lands on Feb 28/29, not Mar 3). <code>DATEDIFF</code> counts boundary crossings, not elapsed duration — one minute past midnight counts as a full day of difference from the prior evening, exactly like T-SQL.</p>
+
+<h3>Known Query Studio restrictions this engine mirrors</h3>
+<ul>
+<li>No <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/DDL — read-only by grammar, not by permission check.</li>
+<li>No scalar or correlated subqueries in <code>SELECT</code>/<code>WHERE</code>/<code>IN (...)</code> — rewrite as a <code>JOIN</code>.</li>
+<li>A maximum number of joined sources per query (configurable; defaults to 8 here).</li>
+<li>Only one statement per query — trailing statements after a terminating <code>;</code> are rejected.</li>
+<li>Unicode identifiers are allowed unquoted (e.g. a field called <code>Købsdato</code>), matching how Automation Studio and Query Studio treat non-ASCII Data Extension/field names.</li>
+</ul>
+
+<h3>Differences from a full T-SQL Server engine</h3>
+<p>This is a client-side reimplementation, not Microsoft SQL Server. It supports the practical subset above; it does not implement stored procedures, transactions, temp tables, cursors, triggers, permissions, or SQL Server system views/functions beyond what's listed here.</p>
+
+</div>
 </div>
 
 <script>
@@ -2983,12 +3129,23 @@
 
   var datasets = [];
   var nextId = 1;
+  var lastResult = null;
 
   var datasetList = document.getElementById('datasetList');
   var addDatasetBtn = document.getElementById('addDatasetBtn');
   var sqlInput = document.getElementById('sqlInput');
   var runBtn = document.getElementById('runBtn');
   var resultArea = document.getElementById('resultArea');
+  var downloadBtn = document.getElementById('downloadBtn');
+
+  document.querySelectorAll('.tab-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+    });
+  });
 
   function parseCsv(text) {
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -3112,7 +3269,40 @@
 
   function clearResult() {
     resultArea.innerHTML = '';
+    downloadBtn.style.display = 'none';
+    lastResult = null;
   }
+
+  function csvEscape(value) {
+    var text = value === null || value === undefined ? '' : String(value);
+    if (/[",\r\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+    return text;
+  }
+
+  function resultToCsv(result) {
+    var lines = [result.columns.map(csvEscape).join(',')];
+    result.rows.forEach(function (row) {
+      lines.push(result.columns.map(function (col) { return csvEscape(row[col]); }).join(','));
+    });
+    return lines.join('\r\n');
+  }
+
+  function downloadResult() {
+    if (!lastResult) return;
+    var csv = resultToCsv(lastResult);
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = url;
+    a.download = 'query-result-' + stamp + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  downloadBtn.addEventListener('click', downloadResult);
 
   function showBanner(kind, message) {
     var banner = document.createElement('div');
@@ -3192,6 +3382,8 @@
     try {
       var statement = SqlEngine.parse(sql);
       var result = SqlEngine.execute(statement, sources);
+      lastResult = result;
+      downloadBtn.style.display = result.rows.length ? '' : 'none';
       renderTable(result);
     } catch (err) {
       if (err instanceof SqlEngine.SqlError) {
