@@ -108,7 +108,6 @@
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
   .result-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .server-note { font-size: 11px; color: #8b949e; margin: 0 0 16px; }
   .ref h3 { font-size: 15px; margin: 20px 0 6px; }
   .ref h4 { font-size: 13px; margin: 14px 0 4px; color: #24292f; }
   .ref p, .ref li { font-size: 13px; line-height: 1.55; color: #24292f; }
@@ -132,11 +131,6 @@
 
 <h1>SQL Engine: CSV Query Sandbox</h1>
 <p class="subtitle">Upload CSV exports of Data Extensions, then run a SELECT against them. Everything runs locally in this page; nothing is uploaded anywhere.</p>
-<p class="server-note">
-<script runat="server" language="javascript">
-  Platform.Response.Write("Page rendered server-side via SSJS at " + Platform.Function.SystemDateToLocalDate(Now()) + " (local system time).");
-</script>
-</p>
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="queryTab">Query</button>
