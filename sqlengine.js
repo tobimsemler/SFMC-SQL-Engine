@@ -1,12 +1,12 @@
 /*
- * sqlengine.js — a backwards-engineered, read-only SQL engine.
+ * sqlengine.js: a backwards-engineered, read-only SQL engine.
  *
  * SFMC's Query Studio has no API: there is no endpoint that takes a SELECT
  * statement and returns rows. The only official path is to create a Query
  * Activity, start it, read the temporary target Data Extension it writes to,
  * then delete it again. This module reproduces the read behaviour of that
  * SELECT engine directly, in plain JavaScript, against row sets already
- * supplied by the caller — no Query Activity, no temporary Data Extension,
+ * supplied by the caller: no Query Activity, no temporary Data Extension,
  * no writes.
  *
  * Deliberate properties:
@@ -138,13 +138,13 @@
         continue;
       }
 
-      // N'unicode literal' — SQL Server prefix, semantically identical here
+      // N'unicode literal' (SQL Server prefix, semantically identical here)
       if ((c === 'N' || c === 'n') && text[i + 1] === "'") {
         i += 1;
         continue;
       }
 
-      // [bracketed identifier] — ]] escapes a closing bracket
+      // [bracketed identifier]: ]] escapes a closing bracket
       if (c === '[') {
         const start = i;
         i += 1;
@@ -1095,7 +1095,7 @@
    * SQL Server's default non-binary collation pads the shorter string before
    * comparing, so 'x' = 'x  ' is true. Trimming trailing spaces is the
    * equivalent, and it has to be applied everywhere a string is compared or
-   * keyed — comparison, GROUP BY, DISTINCT and hash-join buckets — or those
+   * keyed: comparison, GROUP BY, DISTINCT and hash-join buckets, or those
    * operations would disagree with each other.
    */
   function padTrim(text) {
@@ -1817,7 +1817,7 @@
     for (const table of scope.tables) {
       if (table.columnMap.has(lowerColumn)) {
         if (found) {
-          throw new SqlError(`Column "${columnName}" is ambiguous — qualify it with a table alias.`);
+          throw new SqlError(`Column "${columnName}" is ambiguous; qualify it with a table alias.`);
         }
         found = table;
       }
@@ -2260,7 +2260,7 @@
 
   /**
    * ORDER BY on a UNION can only see the combined output, so it may reference
-   * an output column name or a position — not an expression over source tables,
+   * an output column name or a position, not an expression over source tables,
    * which no longer exist at this point.
    */
   function sortUnionRows(rows, columns, orderBy) {
@@ -2687,7 +2687,7 @@
       const groups = new Map();
 
       if (!select.groupBy.length) {
-        // Whole result set is a single group, even when there are no rows —
+        // Whole result set is a single group, even when there are no rows:
         // SELECT COUNT(*) FROM Empty must return 0, not nothing.
         groups.set('', { key: [], rows });
       } else {

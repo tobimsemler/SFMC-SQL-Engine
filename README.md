@@ -10,7 +10,7 @@ It is a single, dependency-free file (`sqlengine.js`) containing a tokenizer, a 
 
 - **No `eval()`, no `new Function()`, no WASM.** The parser is hand-written, so there is no dynamic code-execution path.
 - **No network access.** The module never performs I/O. It only operates on row data (`{ columns, rows }`) that the caller supplies.
-- **Read-only by construction.** There is no AST node for `INSERT`, `UPDATE`, or `DELETE` — the grammar only has statements for `SELECT`, `WITH ... SELECT`, and `UNION`, so nothing else can be parsed.
+- **Read-only by construction.** There is no AST node for `INSERT`, `UPDATE`, or `DELETE`: the grammar only has statements for `SELECT`, `WITH ... SELECT`, and `UNION`, so nothing else can be parsed.
 - **Unicode-aware identifiers.** Unquoted identifiers accept any Unicode letter, matching SQL Server's behaviour and SFMC field/Data Extension names that aren't restricted to ASCII.
 - **Guard rails.** Configurable limits (`maxIntermediateRows`, `maxOutputRows`, `maxJoins`) cause a query to fail with a clear error instead of hanging.
 - **Portable.** Works as a browser script (attaches `SqlEngine` on `window`) or as a CommonJS module, so the same code is unit-testable under `node --test`.
@@ -93,9 +93,9 @@ node --test
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Use it, fork it, modify it, ship it.
+MIT: see [LICENSE](LICENSE). Use it, fork it, modify it, ship it.
 
 ## Disclaimer
 
-This is an independent, backwards-engineered reimplementation of SQL parsing and evaluation behaviour, built by observing how Salesforce Marketing Cloud's Query Studio behaves. It is not affiliated with, endorsed by, or sponsored by Salesforce, Inc. "Salesforce Marketing Cloud" and "SFMC" are trademarks of Salesforce, Inc.; they are used here only to describe compatibility, not to imply an official relationship. No Salesforce source code, confidential material, or proprietary documentation was used to build this project. The engine is provided "as is" with no guarantee that its output matches Query Studio in every case — always validate results against your own environment before relying on them.
+This is an independent, backwards-engineered reimplementation of SQL parsing and evaluation behaviour, built by observing how Salesforce Marketing Cloud's Query Studio behaves. It is not affiliated with, endorsed by, or sponsored by Salesforce, Inc. "Salesforce Marketing Cloud" and "SFMC" are trademarks of Salesforce, Inc.; they are used here only to describe compatibility, not to imply an official relationship. No Salesforce source code, confidential material, or proprietary documentation was used to build this project. The engine is provided "as is" with no guarantee that its output matches Query Studio in every case; always validate results against your own environment before relying on them.
 

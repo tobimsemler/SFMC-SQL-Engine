@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>SQL Engine — CSV Query Sandbox</title>
+<title>SQL Engine: CSV Query Sandbox</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -130,8 +130,8 @@
 </head>
 <body>
 
-<h1>SQL Engine — CSV Query Sandbox</h1>
-<p class="subtitle">Upload CSV exports of Data Extensions, then run a SELECT against them. Everything runs locally in this page — nothing is uploaded anywhere.</p>
+<h1>SQL Engine: CSV Query Sandbox</h1>
+<p class="subtitle">Upload CSV exports of Data Extensions, then run a SELECT against them. Everything runs locally in this page; nothing is uploaded anywhere.</p>
 <p class="server-note">
 <script runat="server" language="javascript">
   Platform.Response.Write("Page rendered server-side via SSJS at " + Platform.Function.SystemDateToLocalDate(Now()) + " (local system time).");
@@ -174,11 +174,11 @@
 <div class="card ref">
 
 <h3>What this is</h3>
-<p>This page embeds a small, dependency-free JavaScript SQL engine that reimplements the read-only SQL dialect used by Salesforce Marketing Cloud's Query Studio (the SQL that runs inside a Query Activity). It parses and evaluates <code>SELECT</code> statements against CSV data you upload yourself — it never connects to Marketing Cloud and never writes anything back.</p>
+<p>This page embeds a small, dependency-free JavaScript SQL engine that reimplements the read-only SQL dialect used by Salesforce Marketing Cloud's Query Studio (the SQL that runs inside a Query Activity). It parses and evaluates <code>SELECT</code> statements against CSV data you upload yourself; it never connects to Marketing Cloud and never writes anything back.</p>
 <p class="note">Not affiliated with or endorsed by Salesforce. "Salesforce Marketing Cloud" and "SFMC" are trademarks of Salesforce, Inc. This reference describes documented, publicly known behavior of Query Studio's SQL dialect (Microsoft SQL Server T-SQL, restricted to a read-only subset) for learning purposes.</p>
 
 <h3>Statement structure</h3>
-<p>Query Studio (and this engine) only ever runs a single <code>SELECT</code> statement, optionally preceded by one or more Common Table Expressions. There is no AST/grammar for <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code>, DDL, or stored procedure calls — Marketing Cloud enforces this because a Query Activity's job is to populate a target Data Extension by reading, never to mutate source data extensions.</p>
+<p>Query Studio (and this engine) only ever runs a single <code>SELECT</code> statement, optionally preceded by one or more Common Table Expressions. There is no AST/grammar for <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code>, DDL, or stored procedure calls. Marketing Cloud enforces this because a Query Activity's job is to populate a target Data Extension by reading, never to mutate source data extensions.</p>
 <pre><code>[ WITH cte_name [ (col1, col2, ...) ] AS ( SELECT ... ) [, ...] ]
 SELECT [ DISTINCT ] [ TOP (n) [ PERCENT ] ]
     column_list
@@ -194,15 +194,15 @@ FROM source [ alias ]
 <ul>
 <li><code>SELECT *</code>, <code>SELECT alias.*</code>, or an explicit, comma-separated column list.</li>
 <li><code>DISTINCT</code> removes duplicate output rows (compared across all selected columns).</li>
-<li><code>TOP (n)</code> and <code>TOP (n) PERCENT</code> limit the row count of the *final* result, after ORDER BY. <code>n</code> must be a literal number — not an expression or a subquery.</li>
+<li><code>TOP (n)</code> and <code>TOP (n) PERCENT</code> limit the row count of the *final* result, after ORDER BY. <code>n</code> must be a literal number, not an expression or a subquery.</li>
 <li>Column aliases: <code>expr AS alias</code> or the bare form <code>expr alias</code>. Aliases are needed for computed/aggregate columns if you want to reference them elsewhere (e.g. in ORDER BY by name or ordinal position).</li>
 </ul>
 
 <h3>FROM and JOIN</h3>
 <ul>
 <li>Sources are Data Extension names, optionally schema-qualified (e.g. <code>ENT.SharedDataExtension</code>), each with an optional alias.</li>
-<li>Join types: <code>INNER JOIN</code>, <code>LEFT [OUTER] JOIN</code>, <code>RIGHT [OUTER] JOIN</code>, <code>FULL [OUTER] JOIN</code>, <code>CROSS JOIN</code>. Marketing Cloud's documented guidance caps a query at a limited number of joined objects — this engine enforces the same idea via a configurable <code>maxJoins</code> limit (default 8).</li>
-<li>Derived tables — a subquery in the FROM/JOIN position, e.g. <code>(SELECT ...) AS x</code> — are supported and must be aliased.</li>
+<li>Join types: <code>INNER JOIN</code>, <code>LEFT [OUTER] JOIN</code>, <code>RIGHT [OUTER] JOIN</code>, <code>FULL [OUTER] JOIN</code>, <code>CROSS JOIN</code>. Marketing Cloud's documented guidance caps a query at a limited number of joined objects; this engine enforces the same idea via a configurable <code>maxJoins</code> limit (default 8).</li>
+<li>Derived tables (a subquery in the FROM/JOIN position, e.g. <code>(SELECT ...) AS x</code>) are supported and must be aliased.</li>
 <li>Scalar and correlated subqueries (a <code>SELECT</code> nested inside an expression, or inside <code>IN (...)</code>) are <strong>not</strong> supported by Query Studio's engine; rewrite them as a JOIN. This engine raises an explicit error pointing you at that rewrite instead of silently misbehaving.</li>
 </ul>
 
@@ -212,14 +212,14 @@ FROM source [ alias ]
 <li>Logical operators: <code>AND</code>, <code>OR</code>, <code>NOT</code> (standard T-SQL precedence: NOT binds tighter than AND, which binds tighter than OR).</li>
 <li><code>IS [NOT] NULL</code>, <code>[NOT] LIKE pattern [ESCAPE char]</code>, <code>[NOT] IN (value, value, ...)</code>, <code>[NOT] BETWEEN low AND high</code>.</li>
 <li><code>LIKE</code> wildcards follow T-SQL: <code>%</code> (any run of characters), <code>_</code> (any single character), <code>[set]</code> and <code>[^set]</code> character classes.</li>
-<li><code>HAVING</code> filters after <code>GROUP BY</code>/aggregation, exactly like standard SQL — you cannot filter on an aggregate result in <code>WHERE</code>.</li>
+<li><code>HAVING</code> filters after <code>GROUP BY</code>/aggregation, exactly like standard SQL: you cannot filter on an aggregate result in <code>WHERE</code>.</li>
 </ul>
 
 <h3>GROUP BY / ORDER BY</h3>
 <ul>
 <li><code>GROUP BY</code> accepts a comma-separated list of expressions/columns.</li>
 <li><code>ORDER BY</code> accepts column names, expressions, aliases, or 1-based ordinal positions (<code>ORDER BY 2 DESC</code>). Each term takes an optional <code>ASC</code>/<code>DESC</code> (default <code>ASC</code>).</li>
-<li>After a <code>UNION</code>, <code>ORDER BY</code> applies to the combined result and must appear only after the final <code>SELECT</code> — not on an individual branch.</li>
+<li>After a <code>UNION</code>, <code>ORDER BY</code> applies to the combined result and must appear only after the final <code>SELECT</code>, not on an individual branch.</li>
 </ul>
 
 <h3>CASE, CAST and CONVERT</h3>
@@ -238,7 +238,7 @@ FROM source [ alias ]
 </table>
 
 <h3>Window functions</h3>
-<p><code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and <code>NTILE(n)</code> are supported, each requiring an <code>OVER (...)</code> clause with an optional <code>PARTITION BY</code> and a required/optional <code>ORDER BY</code> depending on the function — again matching T-SQL's rules, since aggregates used as window functions (e.g. <code>SUM(x) OVER (...)</code>) are not part of Query Studio's supported surface and are rejected here too.</p>
+<p><code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and <code>NTILE(n)</code> are supported, each requiring an <code>OVER (...)</code> clause with an optional <code>PARTITION BY</code> and a required/optional <code>ORDER BY</code> depending on the function, matching T-SQL's rules, since aggregates used as window functions (e.g. <code>SUM(x) OVER (...)</code>) are not part of Query Studio's supported surface and are rejected here too.</p>
 
 <h3>Scalar function reference</h3>
 <table>
@@ -248,14 +248,14 @@ FROM source [ alias ]
 <tr><td>Math</td><td><code>ABS</code>, <code>CEILING</code>, <code>FLOOR</code>, <code>SIGN</code>, <code>SQRT</code>, <code>POWER</code>, <code>ROUND</code></td></tr>
 <tr><td>Date/time</td><td><code>GETDATE</code>, <code>GETUTCDATE</code>, <code>SYSDATETIME</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>DATEPART</code>, <code>DATEADD</code>, <code>DATEDIFF</code>, <code>DATENAME</code></td></tr>
 </table>
-<p><code>DATEADD</code> clamps at month-end boundaries the same way SQL Server does (e.g. adding a month to Jan 31 lands on Feb 28/29, not Mar 3). <code>DATEDIFF</code> counts boundary crossings, not elapsed duration — one minute past midnight counts as a full day of difference from the prior evening, exactly like T-SQL.</p>
+<p><code>DATEADD</code> clamps at month-end boundaries the same way SQL Server does (e.g. adding a month to Jan 31 lands on Feb 28/29, not Mar 3). <code>DATEDIFF</code> counts boundary crossings, not elapsed duration: one minute past midnight counts as a full day of difference from the prior evening, exactly like T-SQL.</p>
 
 <h3>Known Query Studio restrictions this engine mirrors</h3>
 <ul>
-<li>No <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/DDL — read-only by grammar, not by permission check.</li>
-<li>No scalar or correlated subqueries in <code>SELECT</code>/<code>WHERE</code>/<code>IN (...)</code> — rewrite as a <code>JOIN</code>.</li>
+<li>No <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/DDL: read-only by grammar, not by permission check.</li>
+<li>No scalar or correlated subqueries in <code>SELECT</code>/<code>WHERE</code>/<code>IN (...)</code>: rewrite as a <code>JOIN</code>.</li>
 <li>A maximum number of joined sources per query (configurable; defaults to 8 here).</li>
-<li>Only one statement per query — trailing statements after a terminating <code>;</code> are rejected.</li>
+<li>Only one statement per query: trailing statements after a terminating <code>;</code> are rejected.</li>
 <li>Unicode identifiers are allowed unquoted (e.g. a field called <code>Købsdato</code>), matching how Automation Studio and Query Studio treat non-ASCII Data Extension/field names.</li>
 </ul>
 
@@ -267,14 +267,14 @@ FROM source [ alias ]
 
 <script>
 /*
- * sqlengine.js — a backwards-engineered, read-only SQL engine.
+ * sqlengine.js: a backwards-engineered, read-only SQL engine.
  *
  * SFMC's Query Studio has no API: there is no endpoint that takes a SELECT
  * statement and returns rows. The only official path is to create a Query
  * Activity, start it, read the temporary target Data Extension it writes to,
  * then delete it again. This module reproduces the read behaviour of that
  * SELECT engine directly, in plain JavaScript, against row sets already
- * supplied by the caller — no Query Activity, no temporary Data Extension,
+ * supplied by the caller: no Query Activity, no temporary Data Extension,
  * no writes.
  *
  * Deliberate properties:
@@ -406,13 +406,13 @@ FROM source [ alias ]
         continue;
       }
 
-      // N'unicode literal' — SQL Server prefix, semantically identical here
+      // N'unicode literal' (SQL Server prefix, semantically identical here)
       if ((c === 'N' || c === 'n') && text[i + 1] === "'") {
         i += 1;
         continue;
       }
 
-      // [bracketed identifier] — ]] escapes a closing bracket
+      // [bracketed identifier]: ]] escapes a closing bracket
       if (c === '[') {
         const start = i;
         i += 1;
@@ -1363,7 +1363,7 @@ FROM source [ alias ]
    * SQL Server's default non-binary collation pads the shorter string before
    * comparing, so 'x' = 'x  ' is true. Trimming trailing spaces is the
    * equivalent, and it has to be applied everywhere a string is compared or
-   * keyed — comparison, GROUP BY, DISTINCT and hash-join buckets — or those
+   * keyed: comparison, GROUP BY, DISTINCT and hash-join buckets, or those
    * operations would disagree with each other.
    */
   function padTrim(text) {
@@ -2085,7 +2085,7 @@ FROM source [ alias ]
     for (const table of scope.tables) {
       if (table.columnMap.has(lowerColumn)) {
         if (found) {
-          throw new SqlError(`Column "${columnName}" is ambiguous — qualify it with a table alias.`);
+          throw new SqlError(`Column "${columnName}" is ambiguous; qualify it with a table alias.`);
         }
         found = table;
       }
@@ -2528,7 +2528,7 @@ FROM source [ alias ]
 
   /**
    * ORDER BY on a UNION can only see the combined output, so it may reference
-   * an output column name or a position — not an expression over source tables,
+   * an output column name or a position, not an expression over source tables,
    * which no longer exist at this point.
    */
   function sortUnionRows(rows, columns, orderBy) {
@@ -2955,7 +2955,7 @@ FROM source [ alias ]
       const groups = new Map();
 
       if (!select.groupBy.length) {
-        // Whole result set is a single group, even when there are no rows —
+        // Whole result set is a single group, even when there are no rows:
         // SELECT COUNT(*) FROM Empty must return 0, not nothing.
         groups.set('', { key: [], rows });
       } else {
