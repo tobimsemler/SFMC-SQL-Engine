@@ -1,0 +1,3213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SQL Engine — CSV Query Sandbox</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #f5f6f8;
+    color: #1b1f23;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: #57606a; font-size: 13px; margin: 0 0 20px; }
+  .card {
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: #57606a; }
+  .dataset-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid #eaeef2;
+    flex-wrap: wrap;
+  }
+  .dataset-row:last-child { border-bottom: none; }
+  .dataset-row input[type="text"] {
+    width: 160px;
+    padding: 6px 8px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .dataset-row input[type="file"] { font-size: 12px; max-width: 220px; }
+  .dataset-status { font-size: 12px; color: #57606a; flex: 1; min-width: 140px; }
+  .dataset-status.ok { color: #1a7f37; }
+  .dataset-status.error { color: #cf222e; }
+  button {
+    cursor: pointer;
+    border: 1px solid #d0d7de;
+    background: #f6f8fa;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    color: #1b1f23;
+  }
+  button:hover { background: #eef1f4; }
+  button.primary { background: #1a7f37; border-color: #1a7f37; color: #fff; }
+  button.primary:hover { background: #166a2e; }
+  button.danger-text { color: #cf222e; border-color: transparent; background: transparent; padding: 4px 8px; }
+  textarea {
+    width: 100%;
+    min-height: 130px;
+    font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+    font-size: 13px;
+    padding: 10px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    resize: vertical;
+  }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+  .hint { font-size: 12px; color: #57606a; }
+  .banner {
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 12px;
+    white-space: pre-wrap;
+  }
+  .banner.error { background: #fff0ef; border: 1px solid #ffc1bc; color: #82071e; }
+  .banner.warn { background: #fff8dd; border: 1px solid #eed88b; color: #7d5b00; }
+  .banner.info { background: #ddf4ff; border: 1px solid #a7d9f7; color: #0a5a8a; }
+  .result-meta { font-size: 12px; color: #57606a; margin-bottom: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  thead th {
+    text-align: left;
+    background: #f6f8fa;
+    border-bottom: 1px solid #d0d7de;
+    padding: 6px 10px;
+    position: sticky;
+    top: 0;
+  }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid #eaeef2; white-space: pre-wrap; }
+  tbody tr:hover { background: #fafbfc; }
+  .result-scroll { max-height: 480px; overflow: auto; border: 1px solid #d0d7de; border-radius: 6px; }
+  .empty-note { font-size: 13px; color: #57606a; padding: 12px; }
+</style>
+</head>
+<body>
+
+<h1>SQL Engine — CSV Query Sandbox</h1>
+<p class="subtitle">Upload CSV exports of Data Extensions, then run a SELECT against them. Everything runs locally in this page — nothing is uploaded anywhere.</p>
+
+<div class="card">
+  <h2>Datasets</h2>
+  <div id="datasetList"></div>
+  <button id="addDatasetBtn" style="margin-top:8px;">+ Add dataset</button>
+</div>
+
+<div class="card">
+  <h2>Query</h2>
+  <textarea id="sqlInput" spellcheck="false" placeholder="SELECT * FROM customers c LEFT JOIN orders o ON o.CustomerID = c.CustomerID"></textarea>
+  <div class="toolbar">
+    <span class="hint">Table names in FROM/JOIN match the dataset names below (case-insensitive).</span>
+    <button class="primary" id="runBtn">Run query</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Result</h2>
+  <div id="resultArea"><p class="empty-note">Run a query to see results here.</p></div>
+</div>
+
+<script>
+/*
+ * sqlengine.js — a backwards-engineered, read-only SQL engine.
+ *
+ * SFMC's Query Studio has no API: there is no endpoint that takes a SELECT
+ * statement and returns rows. The only official path is to create a Query
+ * Activity, start it, read the temporary target Data Extension it writes to,
+ * then delete it again. This module reproduces the read behaviour of that
+ * SELECT engine directly, in plain JavaScript, against row sets already
+ * supplied by the caller — no Query Activity, no temporary Data Extension,
+ * no writes.
+ *
+ * Deliberate properties:
+ *   - No eval(), no new Function(), no WASM. The parser is hand-written, so
+ *     nothing here can be turned into an arbitrary-code sink.
+ *   - No network access. This module never talks to Marketing Cloud. Rows
+ *     come in as plain arrays from the caller.
+ *   - Only SELECT is representable. There is no AST node for INSERT, UPDATE
+ *     or DELETE, so an unsupported statement cannot be parsed, let alone run.
+ *
+ * Loadable both as a browser script and as a CommonJS module, so the parser
+ * and evaluator can be unit tested under `node --test`.
+ */
+
+(function (root, factory) {
+  const engine = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = engine;
+  if (root) {
+    root.SqlEngine = engine;
+  }
+})(typeof window !== 'undefined' ? window : null, function () {
+  'use strict';
+
+  // Guard rails. A local engine must fail loudly rather than lock up the tab.
+  const LIMITS = {
+    maxIntermediateRows: 2000000,
+    maxOutputRows: 500000,
+    maxJoins: 8
+  };
+
+  // Deep enough for any query a human writes, shallow enough to stay on stack.
+  const MAX_EXPRESSION_DEPTH = 200;
+
+  // ==========================================================================
+  // Tokenizer
+  // ==========================================================================
+
+  const KEYWORDS = new Set([
+    'SELECT', 'DISTINCT', 'TOP', 'PERCENT', 'FROM', 'AS', 'WHERE', 'GROUP', 'BY',
+    'HAVING', 'ORDER', 'ASC', 'DESC', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
+    'CROSS', 'JOIN', 'ON', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'LIKE',
+    'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'UNION', 'ALL', 'WITH',
+    'OVER', 'PARTITION', 'CAST', 'CONVERT', 'ESCAPE', 'TRUE', 'FALSE'
+  ]);
+
+  const THREE_CHAR_OPS = [];
+  const TWO_CHAR_OPS = ['<>', '!=', '>=', '<=', '!<', '!>', '||'];
+  const ONE_CHAR_OPS = ['=', '<', '>', '+', '-', '*', '/', '%'];
+
+  class SqlError extends Error {
+    constructor(message, position) {
+      super(message);
+      this.name = 'SqlError';
+      this.position = position;
+    }
+  }
+
+  function tokenize(sql) {
+    const text = String(sql == null ? '' : sql);
+    const tokens = [];
+    let i = 0;
+
+    const isDigit = (c) => c >= '0' && c <= '9';
+    /*
+     * SQL Server allows Unicode letters in unquoted identifiers, and this matters
+     * in practice: a Danish business unit has fields like "Købsdato" and Data
+     * Extensions like "Kunder Ærø". Restricting identifiers to A-Z would force
+     * users to bracket every such name and would reject queries that run fine in
+     * Automation Studio.
+     */
+    const isIdentStart = (c) => /[\p{L}\p{Nl}_@#]/u.test(c);
+    const isIdentPart = (c) => /[\p{L}\p{Nl}\p{Nd}\p{Mn}\p{Mc}\p{Pc}_@#$]/u.test(c);
+
+    while (i < text.length) {
+      const c = text[i];
+
+      if (c === ' ' || c === '\t' || c === '\r' || c === '\n' || c === '\f' || c === '\v') {
+        i += 1;
+        continue;
+      }
+
+      // -- line comment
+      if (c === '-' && text[i + 1] === '-') {
+        while (i < text.length && text[i] !== '\n') i += 1;
+        continue;
+      }
+
+      // /* block comment */ (SQL Server allows nesting)
+      if (c === '/' && text[i + 1] === '*') {
+        let depth = 1;
+        i += 2;
+        while (i < text.length && depth > 0) {
+          if (text[i] === '/' && text[i + 1] === '*') {
+            depth += 1;
+            i += 2;
+          } else if (text[i] === '*' && text[i + 1] === '/') {
+            depth -= 1;
+            i += 2;
+          } else {
+            i += 1;
+          }
+        }
+        if (depth > 0) throw new SqlError('Unterminated block comment.', i);
+        continue;
+      }
+
+      // 'string literal' with '' as the escape for a single quote
+      if (c === "'") {
+        const start = i;
+        i += 1;
+        let value = '';
+        let closed = false;
+        while (i < text.length) {
+          if (text[i] === "'") {
+            if (text[i + 1] === "'") {
+              value += "'";
+              i += 2;
+              continue;
+            }
+            i += 1;
+            closed = true;
+            break;
+          }
+          value += text[i];
+          i += 1;
+        }
+        if (!closed) throw new SqlError('Unterminated string literal.', start);
+        tokens.push({ type: 'string', value, pos: start });
+        continue;
+      }
+
+      // N'unicode literal' — SQL Server prefix, semantically identical here
+      if ((c === 'N' || c === 'n') && text[i + 1] === "'") {
+        i += 1;
+        continue;
+      }
+
+      // [bracketed identifier] — ]] escapes a closing bracket
+      if (c === '[') {
+        const start = i;
+        i += 1;
+        let value = '';
+        let closed = false;
+        while (i < text.length) {
+          if (text[i] === ']') {
+            if (text[i + 1] === ']') {
+              value += ']';
+              i += 2;
+              continue;
+            }
+            i += 1;
+            closed = true;
+            break;
+          }
+          value += text[i];
+          i += 1;
+        }
+        if (!closed) throw new SqlError('Unterminated [identifier].', start);
+        tokens.push({ type: 'ident', value, quoted: true, pos: start });
+        continue;
+      }
+
+      // "quoted identifier"
+      if (c === '"') {
+        const start = i;
+        i += 1;
+        let value = '';
+        let closed = false;
+        while (i < text.length) {
+          if (text[i] === '"') {
+            if (text[i + 1] === '"') {
+              value += '"';
+              i += 2;
+              continue;
+            }
+            i += 1;
+            closed = true;
+            break;
+          }
+          value += text[i];
+          i += 1;
+        }
+        if (!closed) throw new SqlError('Unterminated "identifier".', start);
+        tokens.push({ type: 'ident', value, quoted: true, pos: start });
+        continue;
+      }
+
+      // number
+      if (isDigit(c) || (c === '.' && isDigit(text[i + 1]))) {
+        const start = i;
+        while (i < text.length && isDigit(text[i])) i += 1;
+        if (text[i] === '.') {
+          i += 1;
+          while (i < text.length && isDigit(text[i])) i += 1;
+        }
+        if (text[i] === 'e' || text[i] === 'E') {
+          const save = i;
+          i += 1;
+          if (text[i] === '+' || text[i] === '-') i += 1;
+          if (isDigit(text[i])) {
+            while (i < text.length && isDigit(text[i])) i += 1;
+          } else {
+            i = save;
+          }
+        }
+        const raw = text.slice(start, i);
+        // Whether the literal was written with a decimal point or exponent
+        // decides "/" later: in T-SQL 7/2 is 3 but 7.0/2 is 3.5.
+        tokens.push({ type: 'number', value: Number(raw), decimal: /[.eE]/.test(raw), pos: start });
+        continue;
+      }
+
+      // identifier or keyword
+      if (isIdentStart(c)) {
+        const start = i;
+        while (i < text.length && isIdentPart(text[i])) i += 1;
+        const raw = text.slice(start, i);
+        const upper = raw.toUpperCase();
+        if (KEYWORDS.has(upper)) tokens.push({ type: 'keyword', value: upper, raw, pos: start });
+        else tokens.push({ type: 'ident', value: raw, quoted: false, pos: start });
+        continue;
+      }
+
+      const three = text.substr(i, 3);
+      if (THREE_CHAR_OPS.includes(three)) {
+        tokens.push({ type: 'op', value: three, pos: i });
+        i += 3;
+        continue;
+      }
+
+      const two = text.substr(i, 2);
+      if (TWO_CHAR_OPS.includes(two)) {
+        tokens.push({ type: 'op', value: two === '!=' ? '<>' : two, pos: i });
+        i += 2;
+        continue;
+      }
+
+      if (ONE_CHAR_OPS.includes(c)) {
+        tokens.push({ type: 'op', value: c, pos: i });
+        i += 1;
+        continue;
+      }
+
+      if ('(),.;'.includes(c)) {
+        tokens.push({ type: 'punc', value: c, pos: i });
+        i += 1;
+        continue;
+      }
+
+      throw new SqlError(`Unexpected character "${c}".`, i);
+    }
+
+    tokens.push({ type: 'eof', value: null, pos: text.length });
+    return tokens;
+  }
+
+  // ==========================================================================
+  // Parser
+  // ==========================================================================
+
+  const AGGREGATE_FUNCTIONS = new Set(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'STDEV', 'STDEVP', 'VAR', 'VARP']);
+  const WINDOW_FUNCTIONS = new Set(['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE']);
+
+  function createParser(sql) {
+    const tokens = tokenize(sql);
+    let pos = 0;
+    let windowCounter = 0;
+
+    const peek = (offset) => tokens[pos + (offset || 0)];
+    const next = () => tokens[pos++];
+
+    function isKeyword(word, offset) {
+      const token = peek(offset);
+      return token.type === 'keyword' && token.value === word;
+    }
+
+    function isPunc(char, offset) {
+      const token = peek(offset);
+      return token.type === 'punc' && token.value === char;
+    }
+
+    function isOp(value, offset) {
+      const token = peek(offset);
+      return token.type === 'op' && token.value === value;
+    }
+
+    function describe(token) {
+      if (!token) return 'end of statement';
+      if (token.type === 'eof') return 'end of statement';
+      if (token.type === 'string') return `string "${token.value}"`;
+      return `"${token.raw != null ? token.raw : token.value}"`;
+    }
+
+    function expectKeyword(word) {
+      if (!isKeyword(word)) throw new SqlError(`Expected ${word} but found ${describe(peek())}.`, peek().pos);
+      return next();
+    }
+
+    function expectPunc(char) {
+      if (!isPunc(char)) throw new SqlError(`Expected "${char}" but found ${describe(peek())}.`, peek().pos);
+      return next();
+    }
+
+    function eatKeyword(word) {
+      if (isKeyword(word)) {
+        next();
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * An identifier in a position where a name is required. Non-reserved
+     * keywords are accepted as names when they are clearly not being used as
+     * syntax, which is what SFMC users hit with columns called "Status" or
+     * "Value".
+     */
+    function parseName(context) {
+      const token = peek();
+      if (token.type === 'ident') {
+        next();
+        return token.value;
+      }
+      throw new SqlError(`Expected ${context || 'a name'} but found ${describe(token)}.`, token.pos);
+    }
+
+    // ---------------------------------------------------------------- statement
+
+    function parseStatement() {
+      const ctes = [];
+      if (isKeyword('WITH')) {
+        next();
+        do {
+          const name = parseName('a common table expression name');
+          const columns = [];
+          if (isPunc('(')) {
+            next();
+            do {
+              columns.push(parseName('a column name'));
+            } while (isPunc(',') && next());
+            expectPunc(')');
+          }
+          expectKeyword('AS');
+          expectPunc('(');
+          const query = parseSetOperation();
+          expectPunc(')');
+          ctes.push({ name, columns, query });
+        } while (isPunc(',') && next());
+      }
+
+      const query = parseSetOperation();
+
+      if (isPunc(';')) next();
+      if (peek().type !== 'eof') {
+        throw new SqlError(`Unexpected ${describe(peek())} after the end of the query. Only one statement is allowed.`, peek().pos);
+      }
+
+      return { type: 'statement', ctes, query };
+    }
+
+    /*
+     * ORDER BY after a UNION sorts the combined result, it is not part of the
+     * last SELECT. Parsing it as part of the last operand would sort only the
+     * bottom half of the result and leave the output looking almost-sorted,
+     * which is worse than an error because it is easy to miss.
+     */
+    function parseSetOperation() {
+      let node = parseSelectCore();
+      let lastCore = node;
+      let isUnion = false;
+
+      while (isKeyword('UNION')) {
+        next();
+        const all = eatKeyword('ALL');
+        if (!lastCore.parenthesised && lastCore.orderBy && lastCore.orderBy.length) {
+          throw new SqlError('ORDER BY is only allowed after the last SELECT in a UNION.');
+        }
+        const right = parseSelectCore();
+        node = { type: 'union', all, left: node, right, orderBy: [] };
+        lastCore = right;
+        isUnion = true;
+      }
+
+      if (isUnion && !lastCore.parenthesised && lastCore.orderBy && lastCore.orderBy.length) {
+        node.orderBy = lastCore.orderBy;
+        lastCore.orderBy = [];
+      }
+
+      return node;
+    }
+
+    function parseSelectCore() {
+      // A fully parenthesised query, e.g. (SELECT ...) UNION (SELECT ...)
+      if (isPunc('(') && (isKeyword('SELECT', 1) || isKeyword('WITH', 1) || isPunc('(', 1))) {
+        depth += 1;
+        if (depth > MAX_EXPRESSION_DEPTH) {
+          depth = 0;
+          throw new SqlError(
+            `This query is nested more than ${MAX_EXPRESSION_DEPTH} levels deep. Simplify it or split the query.`,
+            peek().pos
+          );
+        }
+        try {
+          next();
+          const inner = parseSetOperation();
+          expectPunc(')');
+          // Its own ORDER BY stays its own, e.g. (SELECT TOP 5 ... ORDER BY x).
+          inner.parenthesised = true;
+          return inner;
+        } finally {
+          depth -= 1;
+        }
+      }
+
+      expectKeyword('SELECT');
+
+      const select = {
+        type: 'select',
+        distinct: false,
+        top: null,
+        topPercent: false,
+        columns: [],
+        from: null,
+        joins: [],
+        where: null,
+        groupBy: [],
+        having: null,
+        orderBy: []
+      };
+
+      if (eatKeyword('DISTINCT')) select.distinct = true;
+      else eatKeyword('ALL');
+
+      if (isKeyword('TOP')) {
+        next();
+        let value;
+        if (isPunc('(')) {
+          next();
+          value = parseExpression();
+          expectPunc(')');
+        } else {
+          value = parsePrimary();
+        }
+        if (!value || value.type !== 'literal' || typeof value.value !== 'number') {
+          throw new SqlError('TOP requires a plain number.', peek().pos);
+        }
+        select.top = Math.max(0, Math.floor(value.value));
+        if (eatKeyword('PERCENT')) select.topPercent = true;
+      }
+
+      select.columns = parseSelectList();
+
+      if (isKeyword('FROM')) {
+        next();
+        select.from = parseTableSource();
+        while (true) {
+          const join = tryParseJoin();
+          if (!join) break;
+          select.joins.push(join);
+          if (select.joins.length > LIMITS.maxJoins) {
+            throw new SqlError(`This engine supports at most ${LIMITS.maxJoins} joins in one query.`, peek().pos);
+          }
+        }
+      }
+
+      if (isKeyword('WHERE')) {
+        next();
+        select.where = parseExpression();
+      }
+
+      if (isKeyword('GROUP')) {
+        next();
+        expectKeyword('BY');
+        do {
+          select.groupBy.push(parseExpression());
+        } while (isPunc(',') && next());
+      }
+
+      if (isKeyword('HAVING')) {
+        next();
+        select.having = parseExpression();
+      }
+
+      if (isKeyword('ORDER')) {
+        next();
+        expectKeyword('BY');
+        do {
+          const expr = parseExpression();
+          let direction = 'asc';
+          if (eatKeyword('ASC')) direction = 'asc';
+          else if (eatKeyword('DESC')) direction = 'desc';
+          select.orderBy.push({ expr, direction });
+        } while (isPunc(',') && next());
+      }
+
+      return select;
+    }
+
+    function parseSelectList() {
+      const columns = [];
+      do {
+        if (isOp('*')) {
+          next();
+          columns.push({ star: true, table: null });
+          continue;
+        }
+        // alias.*
+        if (peek().type === 'ident' && isPunc('.', 1) && isOp('*', 2)) {
+          const table = next().value;
+          next();
+          next();
+          columns.push({ star: true, table });
+          continue;
+        }
+
+        const expr = parseExpression();
+        let alias = null;
+        if (isKeyword('AS')) {
+          next();
+          alias = parseAliasName();
+        } else if (peek().type === 'ident' || peek().type === 'string') {
+          // `expr alias` without AS
+          alias = parseAliasName();
+        }
+        columns.push({ star: false, expr, alias });
+      } while (isPunc(',') && next());
+      return columns;
+    }
+
+    function parseAliasName() {
+      const token = peek();
+      if (token.type === 'ident') {
+        next();
+        return token.value;
+      }
+      if (token.type === 'string') {
+        next();
+        return token.value;
+      }
+      throw new SqlError(`Expected an alias but found ${describe(token)}.`, token.pos);
+    }
+
+    function parseTableSource() {
+      if (isPunc('(')) {
+        next();
+        const query = parseSetOperation();
+        expectPunc(')');
+        const alias = parseOptionalAlias();
+        if (!alias) throw new SqlError('A derived table (a subquery in FROM) must have an alias.', peek().pos);
+        return { kind: 'subquery', query, alias };
+      }
+
+      // Names can be qualified, e.g. ENT.SharedDataExtension
+      const parts = [parseName('a Data Extension name')];
+      while (isPunc('.')) {
+        next();
+        parts.push(parseName('a Data Extension name'));
+      }
+
+      let qualifier = null;
+      let name = parts[parts.length - 1];
+      if (parts.length > 1) qualifier = parts.slice(0, -1).join('.');
+
+      const alias = parseOptionalAlias();
+      return { kind: 'table', name, qualifier, alias: alias || name };
+    }
+
+    function parseOptionalAlias() {
+      if (isKeyword('AS')) {
+        next();
+        return parseAliasName();
+      }
+      // Bare alias, but never swallow a keyword that continues the query.
+      if (peek().type === 'ident') return next().value;
+      return null;
+    }
+
+    function tryParseJoin() {
+      let kind = null;
+
+      if (isKeyword('CROSS') && isKeyword('JOIN', 1)) {
+        next();
+        next();
+        const source = parseTableSource();
+        return { kind: 'cross', source, on: null };
+      }
+
+      if (isKeyword('INNER') && isKeyword('JOIN', 1)) {
+        next();
+        kind = 'inner';
+      } else if ((isKeyword('LEFT') || isKeyword('RIGHT') || isKeyword('FULL'))) {
+        const word = peek().value;
+        let offset = 1;
+        if (isKeyword('OUTER', offset)) offset += 1;
+        if (!isKeyword('JOIN', offset)) return null;
+        next();
+        if (isKeyword('OUTER')) next();
+        kind = word.toLowerCase();
+      } else if (isKeyword('JOIN')) {
+        kind = 'inner';
+      } else {
+        return null;
+      }
+
+      expectKeyword('JOIN');
+      const source = parseTableSource();
+      expectKeyword('ON');
+      const on = parseExpression();
+      return { kind, source, on };
+    }
+
+    // -------------------------------------------------------------- expressions
+
+    /*
+     * Recursive descent means nesting depth is stack depth. Without a guard,
+     * "((((((...))))))" a few thousand deep throws a RangeError, which reaches
+     * the user as an opaque "Maximum call stack size exceeded". A depth
+     * counter turns it into a normal SqlError with the position of the
+     * offending expression.
+     */
+    let depth = 0;
+
+    function parseExpression() {
+      depth += 1;
+      if (depth > MAX_EXPRESSION_DEPTH) {
+        depth = 0;
+        throw new SqlError(
+          `This expression is nested more than ${MAX_EXPRESSION_DEPTH} levels deep. Simplify it or split the query.`,
+          peek().pos
+        );
+      }
+      try {
+        return parseOr();
+      } finally {
+        depth -= 1;
+      }
+    }
+
+    function parseOr() {
+      let left = parseAnd();
+      while (isKeyword('OR')) {
+        next();
+        left = { type: 'logical', operator: 'or', left, right: parseAnd() };
+      }
+      return left;
+    }
+
+    function parseAnd() {
+      let left = parseNot();
+      while (isKeyword('AND')) {
+        next();
+        left = { type: 'logical', operator: 'and', left, right: parseNot() };
+      }
+      return left;
+    }
+
+    function parseNot() {
+      if (isKeyword('NOT')) {
+        next();
+        return { type: 'not', operand: parseNot() };
+      }
+      return parsePredicate();
+    }
+
+    function parsePredicate() {
+      let left = parseAdditive();
+
+      while (true) {
+        if (isKeyword('IS')) {
+          next();
+          const negated = eatKeyword('NOT');
+          expectKeyword('NULL');
+          left = { type: 'isNull', operand: left, negated };
+          continue;
+        }
+
+        let negated = false;
+        if (isKeyword('NOT') && (isKeyword('LIKE', 1) || isKeyword('IN', 1) || isKeyword('BETWEEN', 1))) {
+          next();
+          negated = true;
+        }
+
+        if (isKeyword('LIKE')) {
+          next();
+          const pattern = parseAdditive();
+          let escape = null;
+          if (isKeyword('ESCAPE')) {
+            next();
+            escape = parseAdditive();
+          }
+          left = { type: 'like', operand: left, pattern, escape, negated };
+          continue;
+        }
+
+        if (isKeyword('IN')) {
+          next();
+          expectPunc('(');
+          if (isKeyword('SELECT') || isKeyword('WITH')) {
+            throw new SqlError('Subqueries inside IN (...) are not supported by the local engine. Rewrite it as a JOIN.', peek().pos);
+          }
+          const values = [];
+          if (!isPunc(')')) {
+            do {
+              values.push(parseExpression());
+            } while (isPunc(',') && next());
+          }
+          expectPunc(')');
+          left = { type: 'in', operand: left, values, negated };
+          continue;
+        }
+
+        if (isKeyword('BETWEEN')) {
+          next();
+          const low = parseAdditive();
+          expectKeyword('AND');
+          const high = parseAdditive();
+          left = { type: 'between', operand: left, low, high, negated };
+          continue;
+        }
+
+        if (negated) throw new SqlError('NOT must be followed by LIKE, IN or BETWEEN here.', peek().pos);
+
+        const token = peek();
+        if (token.type === 'op' && ['=', '<>', '<', '<=', '>', '>='].includes(token.value)) {
+          next();
+          left = { type: 'comparison', operator: token.value, left, right: parseAdditive() };
+          continue;
+        }
+
+        return left;
+      }
+    }
+
+    function parseAdditive() {
+      let left = parseMultiplicative();
+      while (isOp('+') || isOp('-') || isOp('||')) {
+        const operator = next().value;
+        left = { type: 'binary', operator, left, right: parseMultiplicative() };
+      }
+      return left;
+    }
+
+    function parseMultiplicative() {
+      let left = parseUnary();
+      while (isOp('*') || isOp('/') || isOp('%')) {
+        const operator = next().value;
+        left = { type: 'binary', operator, left, right: parseUnary() };
+      }
+      return left;
+    }
+
+    function parseUnary() {
+      if (isOp('-')) {
+        next();
+        return { type: 'unary', operator: '-', operand: parseUnary() };
+      }
+      if (isOp('+')) {
+        next();
+        return parseUnary();
+      }
+      return parsePrimary();
+    }
+
+    function parsePrimary() {
+      const token = peek();
+
+      if (token.type === 'number') {
+        next();
+        return { type: 'literal', value: token.value, decimal: token.decimal === true };
+      }
+
+      if (token.type === 'string') {
+        next();
+        return { type: 'literal', value: token.value };
+      }
+
+      if (isKeyword('NULL')) {
+        next();
+        return { type: 'literal', value: null };
+      }
+
+      if (isKeyword('TRUE')) {
+        next();
+        return { type: 'literal', value: true };
+      }
+
+      if (isKeyword('FALSE')) {
+        next();
+        return { type: 'literal', value: false };
+      }
+
+      if (isKeyword('CASE')) return parseCase();
+      if (isKeyword('CAST')) return parseCast();
+      if (isKeyword('CONVERT')) return parseConvert();
+
+      // LEFT and RIGHT are join keywords as well as string functions. A
+      // following "(" is the only thing that tells the two apart.
+      if (token.type === 'keyword' && (token.value === 'LEFT' || token.value === 'RIGHT') && isPunc('(', 1)) {
+        return parseFunctionCall();
+      }
+
+      if (isPunc('(')) {
+        next();
+        if (isKeyword('SELECT') || isKeyword('WITH')) {
+          throw new SqlError('Scalar subqueries are not supported by the local engine. Rewrite it as a JOIN.', peek().pos);
+        }
+        const expr = parseExpression();
+        expectPunc(')');
+        return expr;
+      }
+
+      if (token.type === 'ident') {
+        // function call
+        if (isPunc('(', 1)) return parseFunctionCall();
+
+        // column reference, optionally qualified
+        const parts = [next().value];
+        while (isPunc('.')) {
+          next();
+          parts.push(parseName('a column name'));
+        }
+        if (parts.length === 1) return { type: 'column', table: null, name: parts[0] };
+        return { type: 'column', table: parts[parts.length - 2], name: parts[parts.length - 1] };
+      }
+
+      throw new SqlError(`Unexpected ${describe(token)}.`, token.pos);
+    }
+
+    function parseCase() {
+      expectKeyword('CASE');
+      const node = { type: 'case', operand: null, whens: [], else: null };
+      if (!isKeyword('WHEN')) node.operand = parseExpression();
+      while (isKeyword('WHEN')) {
+        next();
+        const when = parseExpression();
+        expectKeyword('THEN');
+        const then = parseExpression();
+        node.whens.push({ when, then });
+      }
+      if (!node.whens.length) throw new SqlError('CASE requires at least one WHEN branch.', peek().pos);
+      if (isKeyword('ELSE')) {
+        next();
+        node.else = parseExpression();
+      }
+      expectKeyword('END');
+      return node;
+    }
+
+    function parseTypeName() {
+      const name = parseName('a data type');
+      let length = null;
+      if (isPunc('(')) {
+        next();
+        if (peek().type === 'ident' && String(peek().value).toUpperCase() === 'MAX') {
+          next();
+          length = 'max';
+        } else {
+          length = next().value;
+          if (isPunc(',')) {
+            next();
+            next();
+          }
+        }
+        expectPunc(')');
+      }
+      return { name: name.toUpperCase(), length };
+    }
+
+    function parseCast() {
+      expectKeyword('CAST');
+      expectPunc('(');
+      const expr = parseExpression();
+      expectKeyword('AS');
+      const target = parseTypeName();
+      expectPunc(')');
+      return { type: 'cast', expr, target };
+    }
+
+    function parseConvert() {
+      expectKeyword('CONVERT');
+      expectPunc('(');
+      const target = parseTypeName();
+      expectPunc(',');
+      const expr = parseExpression();
+      let style = null;
+      if (isPunc(',')) {
+        next();
+        style = parseExpression();
+      }
+      expectPunc(')');
+      return { type: 'cast', expr, target, style };
+    }
+
+    function parseFunctionCall() {
+      const nameToken = next();
+      const name = String(nameToken.value).toUpperCase();
+      expectPunc('(');
+
+      let distinct = false;
+      let star = false;
+      const args = [];
+
+      if (isOp('*') && isPunc(')', 1)) {
+        next();
+        star = true;
+      } else if (!isPunc(')')) {
+        if (isKeyword('DISTINCT')) {
+          next();
+          distinct = true;
+        }
+        do {
+          args.push(parseExpression());
+        } while (isPunc(',') && next());
+      }
+      expectPunc(')');
+
+      if (isKeyword('OVER')) {
+        next();
+        expectPunc('(');
+        const partitionBy = [];
+        const orderBy = [];
+        if (isKeyword('PARTITION')) {
+          next();
+          expectKeyword('BY');
+          do {
+            partitionBy.push(parseExpression());
+          } while (isPunc(',') && next());
+        }
+        if (isKeyword('ORDER')) {
+          next();
+          expectKeyword('BY');
+          do {
+            const expr = parseExpression();
+            let direction = 'asc';
+            if (eatKeyword('ASC')) direction = 'asc';
+            else if (eatKeyword('DESC')) direction = 'desc';
+            orderBy.push({ expr, direction });
+          } while (isPunc(',') && next());
+        }
+        expectPunc(')');
+
+        if (!WINDOW_FUNCTIONS.has(name) && !AGGREGATE_FUNCTIONS.has(name)) {
+          throw new SqlError(`${name}() cannot be used as a window function.`, nameToken.pos);
+        }
+
+        windowCounter += 1;
+        return {
+          type: 'window',
+          name,
+          args,
+          star,
+          distinct,
+          partitionBy,
+          orderBy,
+          id: `w${windowCounter}`
+        };
+      }
+
+      if (WINDOW_FUNCTIONS.has(name)) {
+        throw new SqlError(`${name}() requires an OVER (...) clause.`, nameToken.pos);
+      }
+
+      if (AGGREGATE_FUNCTIONS.has(name)) {
+        return { type: 'aggregate', name, args, star, distinct };
+      }
+
+      if (distinct) throw new SqlError(`DISTINCT is not valid inside ${name}().`, nameToken.pos);
+      return { type: 'function', name, args, position: nameToken.pos };
+    }
+
+    return { parseStatement };
+  }
+
+  function parse(sql) {
+    return createParser(sql).parseStatement();
+  }
+
+  // ==========================================================================
+  // Value semantics
+  // ==========================================================================
+
+  const isNil = (value) => value === null || value === undefined;
+
+  function isDate(value) {
+    return value instanceof Date && !Number.isNaN(value.getTime());
+  }
+
+  // ISO-ish and common SFMC date shapes. Deliberately strict: a bare number
+  // like "2024" must not silently become a date.
+  const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+  const US_DATE_PATTERN = /^\d{1,2}\/\d{1,2}\/\d{4}( \d{1,2}:\d{2}(:\d{2})?( ?[APap][Mm])?)?$/;
+
+  function looksLikeDate(value) {
+    return typeof value === 'string' && (DATE_PATTERN.test(value.trim()) || US_DATE_PATTERN.test(value.trim()));
+  }
+
+  function toDate(value) {
+    if (isDate(value)) return value;
+    if (isNil(value)) return null;
+    if (typeof value === 'number') return new Date(value);
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const NUMERIC_PATTERN = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
+  function looksNumeric(value) {
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value !== 'string') return false;
+    const trimmed = value.trim();
+    return trimmed !== '' && NUMERIC_PATTERN.test(trimmed);
+  }
+
+  function toNumber(value) {
+    if (isNil(value)) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (isDate(value)) return value.getTime();
+    if (looksNumeric(value)) return Number(String(value).trim());
+    return null;
+  }
+
+  function toText(value) {
+    if (isNil(value)) return null;
+    if (isDate(value)) return value.toISOString();
+    if (typeof value === 'boolean') return value ? 'True' : 'False';
+    return String(value);
+  }
+
+  /**
+   * Three-valued comparison. Returns -1, 0, 1, or null for "unknown", which is
+   * what SQL does whenever NULL is involved.
+   *
+   * String comparison is case-insensitive, matching the default SFMC
+   * collation (SQL_Latin1_General_CP1_CI_AS). Getting this wrong would make
+   * local results disagree with the same query run in Automation Studio.
+   */
+  function compareValues(a, b) {
+    if (isNil(a) || isNil(b)) return null;
+
+    if (typeof a === 'boolean' || typeof b === 'boolean') {
+      const left = a === true ? 1 : a === false ? 0 : toNumber(a);
+      const right = b === true ? 1 : b === false ? 0 : toNumber(b);
+      if (left === null || right === null) return null;
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+
+    if (isDate(a) || isDate(b)) {
+      const left = isDate(a) ? a : looksLikeDate(a) ? toDate(a) : null;
+      const right = isDate(b) ? b : looksLikeDate(b) ? toDate(b) : null;
+      if (left && right) {
+        const l = left.getTime();
+        const r = right.getTime();
+        return l < r ? -1 : l > r ? 1 : 0;
+      }
+    }
+
+    if (typeof a === 'number' || typeof b === 'number') {
+      const left = toNumber(a);
+      const right = toNumber(b);
+      if (left !== null && right !== null) return left < right ? -1 : left > right ? 1 : 0;
+    }
+
+    if (looksNumeric(a) && looksNumeric(b)) {
+      const left = Number(String(a).trim());
+      const right = Number(String(b).trim());
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+
+    if (looksLikeDate(a) && looksLikeDate(b)) {
+      const left = toDate(a);
+      const right = toDate(b);
+      if (left && right) {
+        const l = left.getTime();
+        const r = right.getTime();
+        return l < r ? -1 : l > r ? 1 : 0;
+      }
+    }
+
+    const left = padTrim(String(toText(a))).toLowerCase();
+    const right = padTrim(String(toText(b))).toLowerCase();
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  /**
+   * SQL Server's default non-binary collation pads the shorter string before
+   * comparing, so 'x' = 'x  ' is true. Trimming trailing spaces is the
+   * equivalent, and it has to be applied everywhere a string is compared or
+   * keyed — comparison, GROUP BY, DISTINCT and hash-join buckets — or those
+   * operations would disagree with each other.
+   */
+  function padTrim(text) {
+    return text.replace(/ +$/, '');
+  }
+
+  /** ORDER BY needs a total order, so NULLs sort first, as in SQL Server. */
+  function orderValues(a, b) {
+    const aNil = isNil(a);
+    const bNil = isNil(b);
+    if (aNil && bNil) return 0;
+    if (aNil) return -1;
+    if (bNil) return 1;
+    const result = compareValues(a, b);
+    return result === null ? 0 : result;
+  }
+
+  /**
+   * Grouping and DISTINCT treat NULLs as equal to each other, and must use the
+   * same trailing-space rule as compareValues so that GROUP BY, DISTINCT and
+   * hash joins agree with "=".
+   */
+  function groupKeyPart(value) {
+    if (isNil(value)) return '\u0000null';
+    if (isDate(value)) return `d:${value.getTime()}`;
+    if (typeof value === 'number') return `n:${value}`;
+    if (typeof value === 'boolean') return `b:${value ? 1 : 0}`;
+    if (looksNumeric(value)) return `n:${Number(String(value).trim())}`;
+    return `s:${padTrim(String(value)).toLowerCase()}`;
+  }
+
+  function groupKey(values) {
+    return values.map(groupKeyPart).join('\u0001');
+  }
+
+  // --------------------------------------------------------------- LIKE
+
+  /*
+   * LIKE is matched with a bounded wildcard algorithm rather than a regular
+   * expression.
+   *
+   * Translating "%" to ".*" and handing it to the RegExp engine looks obvious
+   * and is a trap: a pattern like '%a%a%a%a%a%a%a%a%a%a%a%a%b' backtracks
+   * exponentially, and since LIKE is evaluated once per row, a user typing that
+   * into a WHERE clause would hang the whole tab with no way out.
+   *
+   * The matcher below is the classic single-star-backtrack algorithm: O(n*m)
+   * worst case, no recursion, no catastrophic blow-up.
+   */
+
+  const LIKE_MAX_PATTERN = 4000;
+  const likeCache = new Map();
+  const LIKE_CACHE_LIMIT = 200;
+
+  function parseLikePattern(pattern, escapeChar) {
+    const text = String(pattern);
+    if (text.length > LIKE_MAX_PATTERN) {
+      throw new SqlError(`LIKE patterns are limited to ${LIKE_MAX_PATTERN} characters.`);
+    }
+
+    const elements = [];
+
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+
+      if (escapeChar && c === escapeChar) {
+        const escaped = text[i + 1];
+        if (escaped === undefined) throw new SqlError('LIKE pattern ends with a dangling escape character.');
+        elements.push({ kind: 'lit', ch: escaped.toLowerCase() });
+        i += 1;
+        continue;
+      }
+
+      if (c === '%') {
+        // Collapse runs of "%" so "%%%%" costs the same as "%".
+        if (elements.length && elements[elements.length - 1].kind === 'any') continue;
+        elements.push({ kind: 'any' });
+        continue;
+      }
+
+      if (c === '_') {
+        elements.push({ kind: 'one' });
+        continue;
+      }
+
+      if (c === '[') {
+        const close = text.indexOf(']', i + 1);
+        if (close > i) {
+          elements.push(parseCharacterClass(text.slice(i + 1, close)));
+          i = close;
+          continue;
+        }
+        // An unclosed "[" is a literal bracket, as in SQL Server.
+        elements.push({ kind: 'lit', ch: '[' });
+        continue;
+      }
+
+      elements.push({ kind: 'lit', ch: c.toLowerCase() });
+    }
+
+    return elements;
+  }
+
+  function parseCharacterClass(body) {
+    let negated = false;
+    let text = body;
+    if (text.startsWith('^')) {
+      negated = true;
+      text = text.slice(1);
+    }
+
+    const chars = new Set();
+    const ranges = [];
+
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i + 1] === '-' && text[i + 2] !== undefined) {
+        const from = text[i].toLowerCase();
+        const to = text[i + 2].toLowerCase();
+        // A reversed range such as [z-a] matches nothing rather than throwing.
+        if (from <= to) ranges.push([from, to]);
+        i += 2;
+        continue;
+      }
+      chars.add(text[i].toLowerCase());
+    }
+
+    return { kind: 'class', negated, chars, ranges };
+  }
+
+  function matchesElement(element, ch) {
+    if (element.kind === 'one') return true;
+    if (element.kind === 'lit') return element.ch === ch;
+    if (element.kind === 'class') {
+      let hit = element.chars.has(ch);
+      if (!hit) {
+        for (const [from, to] of element.ranges) {
+          if (ch >= from && ch <= to) {
+            hit = true;
+            break;
+          }
+        }
+      }
+      return element.negated ? !hit : hit;
+    }
+    return false;
+  }
+
+  function compileLike(pattern, escapeChar) {
+    const key = `${escapeChar || ''}\u0000${pattern}`;
+    const cached = likeCache.get(key);
+    if (cached) return cached;
+
+    const elements = parseLikePattern(pattern, escapeChar);
+    if (likeCache.size >= LIKE_CACHE_LIMIT) likeCache.clear();
+    likeCache.set(key, elements);
+    return elements;
+  }
+
+  /**
+   * @param {string} value
+   * @param {string} pattern
+   * @param {string|null} escapeChar
+   * @returns {boolean}
+   */
+  function likeMatch(value, pattern, escapeChar) {
+    const elements = compileLike(pattern, escapeChar);
+    // LIKE, unlike "=", is sensitive to trailing spaces in SQL Server, so the
+    // value is compared as-is apart from case.
+    const text = String(value).toLowerCase();
+
+    const n = text.length;
+    const m = elements.length;
+
+    let i = 0;
+    let j = 0;
+    let star = -1;
+    let mark = 0;
+
+    while (i < n) {
+      if (j < m && elements[j].kind === 'any') {
+        star = j;
+        mark = i;
+        j += 1;
+        continue;
+      }
+      if (j < m && matchesElement(elements[j], text[i])) {
+        i += 1;
+        j += 1;
+        continue;
+      }
+      if (star !== -1) {
+        mark += 1;
+        i = mark;
+        j = star + 1;
+        continue;
+      }
+      return false;
+    }
+
+    while (j < m && elements[j].kind === 'any') j += 1;
+    return j === m;
+  }
+
+
+  // ==========================================================================
+  // Scalar functions
+  // ==========================================================================
+
+  function pad(value, size) {
+    return String(value).padStart(size, '0');
+  }
+
+  const SCALAR_FUNCTIONS = {
+    // --- string
+    LEN: (v) => (isNil(v) ? null : String(toText(v)).replace(/\s+$/, '').length),
+    DATALENGTH: (v) => (isNil(v) ? null : String(toText(v)).length),
+    LOWER: (v) => (isNil(v) ? null : String(toText(v)).toLowerCase()),
+    UPPER: (v) => (isNil(v) ? null : String(toText(v)).toUpperCase()),
+    LTRIM: (v) => (isNil(v) ? null : String(toText(v)).replace(/^\s+/, '')),
+    RTRIM: (v) => (isNil(v) ? null : String(toText(v)).replace(/\s+$/, '')),
+    TRIM: (v) => (isNil(v) ? null : String(toText(v)).trim()),
+    REVERSE: (v) => (isNil(v) ? null : String(toText(v)).split('').reverse().join('')),
+    SPACE: (n) => (isNil(n) ? null : ' '.repeat(Math.max(0, Math.floor(toNumber(n) || 0)))),
+    LEFT: (v, n) => {
+      if (isNil(v) || isNil(n)) return null;
+      return String(toText(v)).slice(0, Math.max(0, Math.floor(toNumber(n) || 0)));
+    },
+    RIGHT: (v, n) => {
+      if (isNil(v) || isNil(n)) return null;
+      const count = Math.max(0, Math.floor(toNumber(n) || 0));
+      const text = String(toText(v));
+      return count === 0 ? '' : text.slice(Math.max(0, text.length - count));
+    },
+    SUBSTRING: (v, start, length) => {
+      if (isNil(v) || isNil(start)) return null;
+      const text = String(toText(v));
+      // T-SQL is 1-based, and a start below 1 eats into the requested length.
+      const from = Math.floor(toNumber(start) || 0);
+      const take = isNil(length) ? text.length : Math.floor(toNumber(length) || 0);
+      const begin = Math.max(0, from - 1);
+      const end = from - 1 + take;
+      if (end <= begin) return '';
+      return text.slice(begin, Math.max(begin, end));
+    },
+    REPLACE: (v, find, replace) => {
+      if (isNil(v) || isNil(find)) return null;
+      const needle = String(toText(find));
+      if (needle === '') return String(toText(v));
+      const replacement = isNil(replace) ? '' : String(toText(replace));
+      return String(toText(v)).replace(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), () => replacement);
+    },
+    CHARINDEX: (find, v, start) => {
+      if (isNil(find) || isNil(v)) return null;
+      const from = isNil(start) ? 0 : Math.max(0, Math.floor(toNumber(start) || 1) - 1);
+      const index = String(toText(v)).toLowerCase().indexOf(String(toText(find)).toLowerCase(), from);
+      return index + 1;
+    },
+    STUFF: (v, start, length, insert) => {
+      if (isNil(v)) return null;
+      const text = String(toText(v));
+      const from = Math.max(0, Math.floor(toNumber(start) || 1) - 1);
+      const take = Math.max(0, Math.floor(toNumber(length) || 0));
+      return text.slice(0, from) + (isNil(insert) ? '' : String(toText(insert))) + text.slice(from + take);
+    },
+
+    // --- null handling
+    ISNULL: (v, fallback) => (isNil(v) ? (isNil(fallback) ? null : fallback) : v),
+    NULLIF: (a, b) => (compareValues(a, b) === 0 ? null : a),
+
+    // --- math
+    ABS: (v) => {
+      const n = toNumber(v);
+      return n === null ? null : Math.abs(n);
+    },
+    CEILING: (v) => {
+      const n = toNumber(v);
+      return n === null ? null : Math.ceil(n);
+    },
+    FLOOR: (v) => {
+      const n = toNumber(v);
+      return n === null ? null : Math.floor(n);
+    },
+    SIGN: (v) => {
+      const n = toNumber(v);
+      return n === null ? null : Math.sign(n);
+    },
+    SQRT: (v) => {
+      const n = toNumber(v);
+      return n === null || n < 0 ? null : Math.sqrt(n);
+    },
+    POWER: (v, e) => {
+      const n = toNumber(v);
+      const p = toNumber(e);
+      return n === null || p === null ? null : Math.pow(n, p);
+    },
+    ROUND: (v, digits) => {
+      const n = toNumber(v);
+      if (n === null) return null;
+      const places = isNil(digits) ? 0 : Math.floor(toNumber(digits) || 0);
+      const factor = Math.pow(10, places);
+      return Math.round((n + Number.EPSILON * Math.sign(n)) * factor) / factor;
+    },
+
+    // --- date
+    GETDATE: () => new Date(),
+    GETUTCDATE: () => new Date(),
+    SYSDATETIME: () => new Date(),
+    YEAR: (v) => {
+      const d = toDate(v);
+      return d ? d.getFullYear() : null;
+    },
+    MONTH: (v) => {
+      const d = toDate(v);
+      return d ? d.getMonth() + 1 : null;
+    },
+    DAY: (v) => {
+      const d = toDate(v);
+      return d ? d.getDate() : null;
+    }
+  };
+
+  const DATE_PART_ALIASES = {
+    year: 'year', yy: 'year', yyyy: 'year',
+    quarter: 'quarter', qq: 'quarter', q: 'quarter',
+    month: 'month', mm: 'month', m: 'month',
+    dayofyear: 'dayofyear', dy: 'dayofyear', y: 'dayofyear',
+    day: 'day', dd: 'day', d: 'day',
+    week: 'week', wk: 'week', ww: 'week',
+    weekday: 'weekday', dw: 'weekday',
+    hour: 'hour', hh: 'hour',
+    minute: 'minute', mi: 'minute', n: 'minute',
+    second: 'second', ss: 'second', s: 'second',
+    millisecond: 'millisecond', ms: 'millisecond'
+  };
+
+  const MS = { second: 1000, minute: 60000, hour: 3600000, day: 86400000, week: 604800000 };
+
+  function datePart(part, value) {
+    const unit = DATE_PART_ALIASES[String(part).toLowerCase()];
+    const date = toDate(value);
+    if (!unit || !date) return null;
+    switch (unit) {
+      case 'year': return date.getFullYear();
+      case 'quarter': return Math.floor(date.getMonth() / 3) + 1;
+      case 'month': return date.getMonth() + 1;
+      case 'day': return date.getDate();
+      case 'dayofyear': return Math.floor((date - new Date(date.getFullYear(), 0, 0)) / MS.day);
+      case 'weekday': return date.getDay() + 1;
+      case 'week': {
+        const start = new Date(date.getFullYear(), 0, 1);
+        return Math.floor((Math.floor((date - start) / MS.day) + start.getDay()) / 7) + 1;
+      }
+      case 'hour': return date.getHours();
+      case 'minute': return date.getMinutes();
+      case 'second': return date.getSeconds();
+      case 'millisecond': return date.getMilliseconds();
+      default: return null;
+    }
+  }
+
+  /**
+   * DATEADD on a month boundary clamps rather than overflowing: in T-SQL
+   * DATEADD(month, 1, '2026-01-31') is 2026-02-28, whereas JavaScript's
+   * setMonth would roll forward into March and quietly give an answer three
+   * days off from the same query in Automation Studio.
+   */
+  function addMonths(date, months) {
+    const day = date.getDate();
+    const result = new Date(date.getTime());
+    result.setDate(1);
+    result.setMonth(result.getMonth() + months);
+    const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+    result.setDate(Math.min(day, lastDay));
+    return result;
+  }
+
+  function dateAdd(part, amount, value) {
+    const unit = DATE_PART_ALIASES[String(part).toLowerCase()];
+    const date = toDate(value);
+    const count = toNumber(amount);
+    if (!unit || !date || count === null) return null;
+    const result = new Date(date.getTime());
+    switch (unit) {
+      case 'year': return addMonths(result, Math.trunc(count) * 12);
+      case 'quarter': return addMonths(result, Math.trunc(count) * 3);
+      case 'month': return addMonths(result, Math.trunc(count));
+      case 'day':
+      case 'dayofyear':
+      case 'weekday': return new Date(result.getTime() + count * MS.day);
+      case 'week': return new Date(result.getTime() + count * MS.week);
+      case 'hour': return new Date(result.getTime() + count * MS.hour);
+      case 'minute': return new Date(result.getTime() + count * MS.minute);
+      case 'second': return new Date(result.getTime() + count * MS.second);
+      case 'millisecond': return new Date(result.getTime() + count);
+      default: return null;
+    }
+  }
+
+  /**
+   * Truncates a date down to the start of the given unit, in local time.
+   *
+   * This is what makes DATEDIFF count boundary crossings the way T-SQL does:
+   * DATEDIFF(day, '2026-01-01 23:59', '2026-01-02 00:01') is 1, not 0, because
+   * one midnight was crossed. Subtracting the timestamps and dividing would
+   * give 0 and silently disagree with SFMC.
+   */
+  function truncateTo(date, unit) {
+    const y = date.getFullYear();
+    const m = date.getMonth();
+    const d = date.getDate();
+    switch (unit) {
+      case 'week': return new Date(y, m, d - date.getDay());
+      case 'day':
+      case 'dayofyear':
+      case 'weekday': return new Date(y, m, d);
+      case 'hour': return new Date(y, m, d, date.getHours());
+      case 'minute': return new Date(y, m, d, date.getHours(), date.getMinutes());
+      case 'second': return new Date(y, m, d, date.getHours(), date.getMinutes(), date.getSeconds());
+      default: return new Date(date.getTime());
+    }
+  }
+
+  function boundaryDiff(start, end, unit, msPerUnit) {
+    const from = truncateTo(start, unit).getTime();
+    const to = truncateTo(end, unit).getTime();
+    // Rounding absorbs the 23- and 25-hour days that DST produces.
+    return Math.round((to - from) / msPerUnit);
+  }
+
+  function dateDiff(part, startValue, endValue) {
+    const unit = DATE_PART_ALIASES[String(part).toLowerCase()];
+    const start = toDate(startValue);
+    const end = toDate(endValue);
+    if (!unit || !start || !end) return null;
+    switch (unit) {
+      case 'year': return end.getFullYear() - start.getFullYear();
+      case 'quarter':
+        return (end.getFullYear() - start.getFullYear()) * 4 + (Math.floor(end.getMonth() / 3) - Math.floor(start.getMonth() / 3));
+      case 'month':
+        return (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+      case 'week': return boundaryDiff(start, end, 'week', MS.week);
+      case 'day':
+      case 'dayofyear':
+      case 'weekday': return boundaryDiff(start, end, 'day', MS.day);
+      case 'hour': return boundaryDiff(start, end, 'hour', MS.hour);
+      case 'minute': return boundaryDiff(start, end, 'minute', MS.minute);
+      case 'second': return boundaryDiff(start, end, 'second', MS.second);
+      case 'millisecond': return end.getTime() - start.getTime();
+      default: return null;
+    }
+  }
+
+  /*
+   * CONVERT's third argument is a style code, and it is not decoration:
+   * CONVERT(VARCHAR, d, 112) is "20260304", the form SFMC queries use to build
+   * date keys. Ignoring the style and returning "2026-03-04 00:00:00" would
+   * produce a wrong string that still looks like a date, so an unknown style
+   * is refused rather than approximated.
+   */
+  const DATE_STYLES = {
+    1: (d) => `${pad(d.getMonth() + 1, 2)}/${pad(d.getDate(), 2)}/${String(d.getFullYear()).slice(2)}`,
+    101: (d) => `${pad(d.getMonth() + 1, 2)}/${pad(d.getDate(), 2)}/${d.getFullYear()}`,
+    2: (d) => `${String(d.getFullYear()).slice(2)}.${pad(d.getMonth() + 1, 2)}.${pad(d.getDate(), 2)}`,
+    102: (d) => `${d.getFullYear()}.${pad(d.getMonth() + 1, 2)}.${pad(d.getDate(), 2)}`,
+    3: (d) => `${pad(d.getDate(), 2)}/${pad(d.getMonth() + 1, 2)}/${String(d.getFullYear()).slice(2)}`,
+    103: (d) => `${pad(d.getDate(), 2)}/${pad(d.getMonth() + 1, 2)}/${d.getFullYear()}`,
+    4: (d) => `${pad(d.getDate(), 2)}.${pad(d.getMonth() + 1, 2)}.${String(d.getFullYear()).slice(2)}`,
+    104: (d) => `${pad(d.getDate(), 2)}.${pad(d.getMonth() + 1, 2)}.${d.getFullYear()}`,
+    5: (d) => `${pad(d.getDate(), 2)}-${pad(d.getMonth() + 1, 2)}-${String(d.getFullYear()).slice(2)}`,
+    105: (d) => `${pad(d.getDate(), 2)}-${pad(d.getMonth() + 1, 2)}-${d.getFullYear()}`,
+    8: (d) => `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`,
+    108: (d) => `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`,
+    24: (d) => `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`,
+    10: (d) => `${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}-${String(d.getFullYear()).slice(2)}`,
+    110: (d) => `${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}-${d.getFullYear()}`,
+    11: (d) => `${String(d.getFullYear()).slice(2)}/${pad(d.getMonth() + 1, 2)}/${pad(d.getDate(), 2)}`,
+    111: (d) => `${d.getFullYear()}/${pad(d.getMonth() + 1, 2)}/${pad(d.getDate(), 2)}`,
+    12: (d) => `${String(d.getFullYear()).slice(2)}${pad(d.getMonth() + 1, 2)}${pad(d.getDate(), 2)}`,
+    112: (d) => `${d.getFullYear()}${pad(d.getMonth() + 1, 2)}${pad(d.getDate(), 2)}`,
+    14: (d) =>
+      `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}:${pad(d.getMilliseconds(), 3)}`,
+    114: (d) =>
+      `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}:${pad(d.getMilliseconds(), 3)}`,
+    20: (d) => `${isoDate(d)} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`,
+    120: (d) => `${isoDate(d)} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`,
+    21: (d) =>
+      `${isoDate(d)} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`,
+    25: (d) =>
+      `${isoDate(d)} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`,
+    121: (d) =>
+      `${isoDate(d)} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`,
+    23: (d) => isoDate(d),
+    126: (d) =>
+      `${isoDate(d)}T${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`
+  };
+
+  // Styles that read the day before the month, which changes how a string is
+  // parsed back into a date.
+  const DAY_FIRST_STYLES = new Set([3, 103, 4, 104, 5, 105]);
+
+  function isoDate(d) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}`;
+  }
+
+  function formatDateForCast(date, typeName, style) {
+    if (style !== null && style !== undefined) {
+      const formatter = DATE_STYLES[style];
+      if (!formatter) {
+        throw new SqlError(
+          `CONVERT style ${style} is not supported by the local engine. ` +
+            'Supported styles are 1-5, 8, 10-12, 14, 20, 21, 23-25, 101-105, 108, 110-112, 114, 120, 121 and 126.'
+        );
+      }
+      return formatter(date);
+    }
+
+    if (typeName === 'DATE') return isoDate(date);
+    return `${isoDate(date)} ${pad(date.getHours(), 2)}:${pad(date.getMinutes(), 2)}:${pad(date.getSeconds(), 2)}`;
+  }
+
+  function castValue(value, target, style) {
+    if (isNil(value)) return null;
+    const name = target.name;
+
+    if (['INT', 'INTEGER', 'BIGINT', 'SMALLINT', 'TINYINT'].includes(name)) {
+      const n = toNumber(value);
+      return n === null ? null : Math.trunc(n);
+    }
+    if (['DECIMAL', 'NUMERIC', 'FLOAT', 'REAL', 'MONEY', 'NUMBER'].includes(name)) {
+      return toNumber(value);
+    }
+    if (['BIT', 'BOOLEAN'].includes(name)) {
+      if (typeof value === 'boolean') return value;
+      const n = toNumber(value);
+      if (n !== null) return n !== 0;
+      return /^(true|yes|y)$/i.test(String(value));
+    }
+    if (['DATE', 'DATETIME', 'DATETIME2', 'SMALLDATETIME', 'TIME'].includes(name)) {
+      const d = parseDateWithStyle(value, style);
+      if (!d) return null;
+      if (name === 'DATE') {
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      }
+      return d;
+    }
+    if (['VARCHAR', 'NVARCHAR', 'CHAR', 'NCHAR', 'TEXT', 'STRING'].includes(name)) {
+      const text = isDate(value) ? formatDateForCast(value, 'DATETIME', style) : String(toText(value));
+      if (target.length && target.length !== 'max' && Number.isFinite(Number(target.length))) {
+        return text.slice(0, Number(target.length));
+      }
+      return text;
+    }
+    throw new SqlError(`CAST to ${name} is not supported by the local engine.`);
+  }
+
+  /**
+   * Converting text to a date has to honour the style too: with style 103,
+   * '01/02/2026' is 1 February, and defaulting to month-first would silently
+   * return a date a month out.
+   */
+  function parseDateWithStyle(value, style) {
+    if (isDate(value) || style === null || style === undefined) return toDate(value);
+
+    const text = String(toText(value)).trim();
+
+    if (style === 112 || style === 12) {
+      const match = text.match(/^(\d{4}|\d{2})(\d{2})(\d{2})$/);
+      if (match) {
+        const year = match[1].length === 4 ? Number(match[1]) : 2000 + Number(match[1]);
+        return new Date(year, Number(match[2]) - 1, Number(match[3]));
+      }
+    }
+
+    if (DAY_FIRST_STYLES.has(style)) {
+      const match = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})$/);
+      if (match) {
+        const year = match[3].length === 4 ? Number(match[3]) : 2000 + Number(match[3]);
+        return new Date(year, Number(match[2]) - 1, Number(match[1]));
+      }
+    }
+
+    return toDate(value);
+  }
+
+  // ==========================================================================
+  // Row scope
+  // ==========================================================================
+
+  /**
+   * A Table is one named row source inside a query: a Data Extension, a
+   * derived table or a CTE. `columns` preserves declaration order so that
+   * `SELECT *` returns fields in the order SFMC reports them.
+   */
+  function makeTable(alias, columns, rows, decimalColumns) {
+    const map = new Map();
+    for (const column of columns) map.set(String(column).toLowerCase(), column);
+    return {
+      alias,
+      columns: columns.slice(),
+      columnMap: map,
+      rows,
+      // Which columns hold a decimal type in SFMC. Needed because JavaScript
+      // has one number type and T-SQL's "/" and AVG behave differently for
+      // integers than for decimals.
+      decimalColumns: decimalColumns instanceof Set ? decimalColumns : new Set()
+    };
+  }
+
+  function tableFromRows(alias, rows, declaredColumns, decimalColumns) {
+    if (declaredColumns && declaredColumns.length) return makeTable(alias, declaredColumns, rows, decimalColumns);
+    const seen = [];
+    const seenSet = new Set();
+    for (const row of rows) {
+      for (const key of Object.keys(row || {})) {
+        if (!seenSet.has(key)) {
+          seenSet.add(key);
+          seen.push(key);
+        }
+      }
+    }
+    return makeTable(alias, seen, rows, decimalColumns);
+  }
+
+  /** A joined row: which alias contributed which source row. */
+
+  const DECIMAL_TYPE_NAMES = ['DECIMAL', 'NUMERIC', 'FLOAT', 'REAL', 'MONEY', 'NUMBER'];
+
+  /*
+   * Static "is this expression decimal-typed?" check.
+   *
+   * JavaScript has a single number type, so the engine cannot tell 4 from 4.00
+   * at runtime. T-SQL can, and it changes the answer for "/" and AVG. The type
+   * is therefore inferred from the query text plus the Data Extension field
+   * types the runner supplies, exactly as SQL Server infers it.
+   */
+  function isDecimalExpression(node, ctx) {
+    if (!node || typeof node !== 'object') return false;
+
+    switch (node.type) {
+      case 'literal':
+        return node.decimal === true;
+
+      case 'cast':
+        return DECIMAL_TYPE_NAMES.includes(node.target && node.target.name);
+
+      case 'column':
+        return isDecimalColumn(ctx && ctx.scope, node.table, node.name);
+
+      case 'unary':
+        return isDecimalExpression(node.operand, ctx);
+
+      case 'binary':
+        return isDecimalExpression(node.left, ctx) || isDecimalExpression(node.right, ctx);
+
+      case 'case':
+        return (
+          (node.whens || []).some((branch) => isDecimalExpression(branch.then, ctx)) ||
+          isDecimalExpression(node.else, ctx)
+        );
+
+      case 'aggregate': {
+        const name = String(node.name || '').toUpperCase();
+        // COUNT is always an integer; the rest carry their argument's type.
+        if (name === 'COUNT') return false;
+        return (node.args || []).some((arg) => isDecimalExpression(arg, ctx));
+      }
+
+      case 'function': {
+        const name = String(node.name || '').toUpperCase();
+        // These carry their argument's type through unchanged.
+        if (['ABS', 'ISNULL', 'COALESCE', 'ROUND', 'NULLIF', 'IIF'].includes(name)) {
+          return (node.args || []).some((arg) => isDecimalExpression(arg, ctx));
+        }
+        // These always produce a decimal, whatever went in.
+        return ['SQRT', 'POWER', 'EXP', 'LOG', 'LOG10', 'RAND'].includes(name);
+      }
+
+      default:
+        return false;
+    }
+  }
+
+  function isDecimalColumn(scope, tableName, columnName) {
+    if (!scope) return false;
+    const lower = String(columnName).toLowerCase();
+
+    if (tableName) {
+      const table = scope.byAlias.get(String(tableName).toLowerCase());
+      return Boolean(table && table.decimalColumns.has(lower));
+    }
+
+    for (const table of scope.tables) {
+      if (table.columnMap.has(lower)) return table.decimalColumns.has(lower);
+    }
+    return false;
+  }
+
+  function makeScope(tables) {
+    return { tables, byAlias: new Map(tables.map((t) => [t.alias.toLowerCase(), t])) };
+  }
+
+  function resolveColumn(scope, values, tableName, columnName) {
+    const lowerColumn = String(columnName).toLowerCase();
+
+    if (tableName) {
+      const table = scope.byAlias.get(String(tableName).toLowerCase());
+      if (!table) {
+        throw new SqlError(`Unknown table or alias "${tableName}".`);
+      }
+      const actual = table.columnMap.get(lowerColumn);
+      if (actual === undefined) {
+        throw new SqlError(`"${tableName}" has no column called "${columnName}".`);
+      }
+      const row = values[table.alias.toLowerCase()];
+      return row ? normalizeCell(row[actual]) : null;
+    }
+
+    let found = null;
+    for (const table of scope.tables) {
+      if (table.columnMap.has(lowerColumn)) {
+        if (found) {
+          throw new SqlError(`Column "${columnName}" is ambiguous — qualify it with a table alias.`);
+        }
+        found = table;
+      }
+    }
+    if (!found) {
+      throw new SqlError(`Unknown column "${columnName}".`);
+    }
+    const row = values[found.alias.toLowerCase()];
+    return row ? normalizeCell(row[found.columnMap.get(lowerColumn)]) : null;
+  }
+
+  function normalizeCell(value) {
+    return value === undefined ? null : value;
+  }
+
+  // ==========================================================================
+  // Expression evaluation
+  // ==========================================================================
+
+  function containsAggregate(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'aggregate') return true;
+    if (node.type === 'window') return false; // a window function is not a grouping aggregate
+    for (const key of Object.keys(node)) {
+      if (key === 'type') continue;
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const item of value) if (containsAggregate(item)) return true;
+      } else if (value && typeof value === 'object' && containsAggregate(value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function collectWindows(node, into) {
+    if (!node || typeof node !== 'object') return into;
+    if (node.type === 'window') into.push(node);
+    for (const key of Object.keys(node)) {
+      if (key === 'type') continue;
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const item of value) collectWindows(item, into);
+      } else if (value && typeof value === 'object') {
+        collectWindows(value, into);
+      }
+    }
+    return into;
+  }
+
+  function expressionKey(node) {
+    return JSON.stringify(node, (key, value) => (key === 'position' ? undefined : value));
+  }
+
+  /**
+   * ctx = {
+   *   scope, values,          current joined row
+   *   groupRows,              [{values}] when evaluating inside a GROUP BY
+   *   windowValues,           Map(windowId -> value) for the current row
+   *   aliases                 Map(lowerAlias -> value) for ORDER BY on output names
+   * }
+   */
+  function evaluate(node, ctx) {
+    switch (node.type) {
+      case 'literal':
+        return node.value;
+
+      case 'column': {
+        if (!node.table && ctx.aliases && ctx.aliases.has(String(node.name).toLowerCase())) {
+          return ctx.aliases.get(String(node.name).toLowerCase());
+        }
+        return resolveColumn(ctx.scope, ctx.values, node.table, node.name);
+      }
+
+      case 'logical': {
+        const left = truth(evaluate(node.left, ctx));
+        if (node.operator === 'and') {
+          if (left === false) return false;
+          const right = truth(evaluate(node.right, ctx));
+          if (right === false) return false;
+          if (left === null || right === null) return null;
+          return true;
+        }
+        if (left === true) return true;
+        const right = truth(evaluate(node.right, ctx));
+        if (right === true) return true;
+        if (left === null || right === null) return null;
+        return false;
+      }
+
+      case 'not': {
+        const value = truth(evaluate(node.operand, ctx));
+        return value === null ? null : !value;
+      }
+
+      case 'comparison': {
+        const result = compareValues(evaluate(node.left, ctx), evaluate(node.right, ctx));
+        if (result === null) return null;
+        switch (node.operator) {
+          case '=': return result === 0;
+          case '<>': return result !== 0;
+          case '<': return result < 0;
+          case '<=': return result <= 0;
+          case '>': return result > 0;
+          case '>=': return result >= 0;
+          default: throw new SqlError(`Unsupported operator "${node.operator}".`);
+        }
+      }
+
+      case 'isNull': {
+        const value = evaluate(node.operand, ctx);
+        return node.negated ? !isNil(value) : isNil(value);
+      }
+
+      case 'like': {
+        const value = evaluate(node.operand, ctx);
+        const pattern = evaluate(node.pattern, ctx);
+        if (isNil(value) || isNil(pattern)) return null;
+        const escapeValue = node.escape ? evaluate(node.escape, ctx) : null;
+        const matched = likeMatch(
+          String(toText(value)),
+          String(toText(pattern)),
+          isNil(escapeValue) ? null : String(toText(escapeValue))[0]
+        );
+        return node.negated ? !matched : matched;
+      }
+
+      case 'in': {
+        const value = evaluate(node.operand, ctx);
+        if (isNil(value)) return null;
+        let sawNull = false;
+        for (const candidate of node.values) {
+          const other = evaluate(candidate, ctx);
+          if (isNil(other)) {
+            sawNull = true;
+            continue;
+          }
+          if (compareValues(value, other) === 0) return !node.negated;
+        }
+        // NOT IN with a NULL in the list yields unknown, never true.
+        if (sawNull) return null;
+        return Boolean(node.negated);
+      }
+
+      case 'between': {
+        const value = evaluate(node.operand, ctx);
+        const low = compareValues(value, evaluate(node.low, ctx));
+        const high = compareValues(value, evaluate(node.high, ctx));
+        if (low === null || high === null) return null;
+        const inside = low >= 0 && high <= 0;
+        return node.negated ? !inside : inside;
+      }
+
+      case 'unary': {
+        const value = toNumber(evaluate(node.operand, ctx));
+        return value === null ? null : -value;
+      }
+
+      case 'binary': {
+        const left = evaluate(node.left, ctx);
+        const right = evaluate(node.right, ctx);
+
+        if (node.operator === '||') {
+          if (isNil(left) || isNil(right)) return null;
+          return String(toText(left)) + String(toText(right));
+        }
+
+        // SQL Server overloads "+" as string concatenation.
+        if (node.operator === '+' && (typeof left === 'string' || typeof right === 'string')) {
+          const leftNumeric = isNil(left) || looksNumeric(left) || typeof left === 'number';
+          const rightNumeric = isNil(right) || looksNumeric(right) || typeof right === 'number';
+          if (!leftNumeric || !rightNumeric) {
+            if (isNil(left) || isNil(right)) return null;
+            return String(toText(left)) + String(toText(right));
+          }
+        }
+
+        const a = toNumber(left);
+        const b = toNumber(right);
+        if (a === null || b === null) return null;
+
+        switch (node.operator) {
+          case '+': return a + b;
+          case '-': return a - b;
+          case '*': return a * b;
+          case '/': {
+            if (b === 0) return null;
+            const quotient = a / b;
+            /*
+             * T-SQL keeps the type of the operands: 7/2 is 3, not 3.5. Getting
+             * this wrong is the worst kind of bug here, because the query runs
+             * fine and just returns a different number than Automation Studio.
+             */
+            return isDecimalExpression(node.left, ctx) || isDecimalExpression(node.right, ctx)
+              ? quotient
+              : Math.trunc(quotient);
+          }
+          case '%': return b === 0 ? null : a % b;
+          default: throw new SqlError(`Unsupported operator "${node.operator}".`);
+        }
+      }
+
+      case 'case': {
+        if (node.operand) {
+          const subject = evaluate(node.operand, ctx);
+          for (const branch of node.whens) {
+            if (compareValues(subject, evaluate(branch.when, ctx)) === 0) return evaluate(branch.then, ctx);
+          }
+        } else {
+          for (const branch of node.whens) {
+            if (truth(evaluate(branch.when, ctx)) === true) return evaluate(branch.then, ctx);
+          }
+        }
+        return node.else ? evaluate(node.else, ctx) : null;
+      }
+
+      case 'cast': {
+        let style = null;
+        if (node.style) {
+          const raw = toNumber(evaluate(node.style, ctx));
+          if (raw === null) throw new SqlError('CONVERT style must be a number.');
+          style = Math.trunc(raw);
+        }
+        return castValue(evaluate(node.expr, ctx), node.target, style);
+      }
+
+      case 'function':
+        return callScalar(node, ctx);
+
+      case 'window': {
+        if (!ctx.windowValues || !ctx.windowValues.has(node.id)) {
+          throw new SqlError(`${node.name}() OVER (...) can only be used in the SELECT list or ORDER BY.`);
+        }
+        return ctx.windowValues.get(node.id);
+      }
+
+      case 'aggregate': {
+        if (!ctx.groupRows) {
+          throw new SqlError(`${node.name}() can only be used with GROUP BY or as a whole-result aggregate.`);
+        }
+        return computeAggregate(node, ctx);
+      }
+
+      default:
+        throw new SqlError(`Unsupported expression type "${node.type}".`);
+    }
+  }
+
+  function truth(value) {
+    if (isNil(value)) return null;
+    if (typeof value === 'boolean') return value;
+    const number = toNumber(value);
+    if (number !== null) return number !== 0;
+    return Boolean(value);
+  }
+
+  function callScalar(node, ctx) {
+    const name = node.name;
+
+    // Functions whose first argument is a bare date-part keyword rather than
+    // a value, so they cannot go through the generic path.
+    if (name === 'DATEPART' || name === 'DATEADD' || name === 'DATEDIFF' || name === 'DATENAME') {
+      const partNode = node.args[0];
+      if (!partNode || partNode.type !== 'column' || partNode.table) {
+        throw new SqlError(`${name}() needs a date part as its first argument, e.g. ${name}(day, ...).`);
+      }
+      const part = partNode.name;
+      if (name === 'DATEPART') return datePart(part, evaluate(node.args[1], ctx));
+      if (name === 'DATENAME') {
+        const value = datePart(part, evaluate(node.args[1], ctx));
+        return value === null ? null : String(value);
+      }
+      if (name === 'DATEADD') return dateAdd(part, evaluate(node.args[1], ctx), evaluate(node.args[2], ctx));
+      return dateDiff(part, evaluate(node.args[1], ctx), evaluate(node.args[2], ctx));
+    }
+
+    if (name === 'COALESCE') {
+      for (const arg of node.args) {
+        const value = evaluate(arg, ctx);
+        if (!isNil(value)) return value;
+      }
+      return null;
+    }
+
+    if (name === 'CONCAT') {
+      return node.args
+        .map((arg) => {
+          const value = evaluate(arg, ctx);
+          return isNil(value) ? '' : String(toText(value));
+        })
+        .join('');
+    }
+
+    if (name === 'IIF') {
+      if (node.args.length !== 3) throw new SqlError('IIF() takes exactly three arguments.');
+      return truth(evaluate(node.args[0], ctx)) === true ? evaluate(node.args[1], ctx) : evaluate(node.args[2], ctx);
+    }
+
+    const fn = SCALAR_FUNCTIONS[name];
+    if (!fn) {
+      throw new SqlError(`${name}() is not supported by the local engine.`);
+    }
+    return fn(...node.args.map((arg) => evaluate(arg, ctx)));
+  }
+
+  function computeAggregate(node, ctx) {
+    const rows = ctx.groupRows;
+    const name = node.name;
+
+    if (name === 'COUNT' && node.star) return rows.length;
+
+    const argument = node.args[0];
+    if (!argument) throw new SqlError(`${name}() requires an argument.`);
+
+    const values = [];
+    const seen = node.distinct ? new Set() : null;
+
+    for (const row of rows) {
+      const value = evaluate(argument, {
+        scope: ctx.scope,
+        values: row.values,
+        groupRows: null,
+        windowValues: row.windowValues,
+        aliases: null
+      });
+      if (isNil(value)) continue;
+      if (seen) {
+        const key = groupKeyPart(value);
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      values.push(value);
+    }
+
+    if (name === 'COUNT') return values.length;
+    if (!values.length) return null;
+
+    if (name === 'MIN') return values.reduce((best, value) => (orderValues(value, best) < 0 ? value : best));
+    if (name === 'MAX') return values.reduce((best, value) => (orderValues(value, best) > 0 ? value : best));
+
+    const numbers = values.map(toNumber).filter((value) => value !== null);
+    if (!numbers.length) return null;
+
+    if (name === 'SUM') return numbers.reduce((total, value) => total + value, 0);
+    if (name === 'AVG') {
+      const mean = numbers.reduce((total, value) => total + value, 0) / numbers.length;
+      // T-SQL AVG over an integer column is integer division: AVG of 1 and 2
+      // is 1, not 1.5. Returning 1.5 would quietly disagree with SFMC.
+      return isDecimalExpression(argument, ctx) ? mean : Math.trunc(mean);
+    }
+
+    const mean = numbers.reduce((total, value) => total + value, 0) / numbers.length;
+    const squares = numbers.reduce((total, value) => total + (value - mean) * (value - mean), 0);
+    if (name === 'VARP') return squares / numbers.length;
+    if (name === 'STDEVP') return Math.sqrt(squares / numbers.length);
+    if (numbers.length < 2) return null;
+    if (name === 'VAR') return squares / (numbers.length - 1);
+    if (name === 'STDEV') return Math.sqrt(squares / (numbers.length - 1));
+
+    throw new SqlError(`${name}() is not supported by the local engine.`);
+  }
+
+  // ==========================================================================
+  // Execution
+  // ==========================================================================
+
+  /**
+   * @param {object} statement  AST from parse()
+   * @param {object} sources    { lowerTableName: { columns: string[], rows: object[] } }
+   * @param {object} [options]  { maxOutputRows, maxIntermediateRows }
+   * @returns {{columns: string[], rows: object[], truncated: boolean}}
+   */
+  function execute(statement, sources, options) {
+    const settings = Object.assign(
+      { maxOutputRows: LIMITS.maxOutputRows, maxIntermediateRows: LIMITS.maxIntermediateRows },
+      options || {}
+    );
+
+    const registry = new Map();
+    for (const [key, value] of Object.entries(sources || {})) {
+      registry.set(String(key).toLowerCase(), value);
+    }
+
+    for (const cte of statement.ctes || []) {
+      const result = runQuery(cte.query, registry, settings);
+      const columns = cte.columns && cte.columns.length ? cte.columns : result.columns;
+      const rows = cte.columns && cte.columns.length
+        ? result.rows.map((row) => {
+            const mapped = {};
+            result.columns.forEach((source, index) => {
+              if (cte.columns[index] !== undefined) mapped[cte.columns[index]] = row[source];
+            });
+            return mapped;
+          })
+        : result.rows;
+      registry.set(String(cte.name).toLowerCase(), { columns, rows });
+    }
+
+    return runQuery(statement.query, registry, settings);
+  }
+
+  function runQuery(query, registry, settings) {
+    if (query.type === 'union') {
+      const left = runQuery(query.left, registry, settings);
+      const right = runQuery(query.right, registry, settings);
+      if (left.columns.length !== right.columns.length) {
+        throw new SqlError('UNION requires both queries to return the same number of columns.');
+      }
+      let rows = left.rows.concat(
+        right.rows.map((row) => {
+          const mapped = {};
+          right.columns.forEach((column, index) => {
+            mapped[left.columns[index]] = row[column];
+          });
+          return mapped;
+        })
+      );
+
+      if (!query.all) {
+        const seen = new Set();
+        const distinct = [];
+        for (const row of rows) {
+          const key = groupKey(left.columns.map((column) => row[column]));
+          if (seen.has(key)) continue;
+          seen.add(key);
+          distinct.push(row);
+        }
+        rows = distinct;
+      }
+
+      if (query.orderBy && query.orderBy.length) {
+        rows = sortUnionRows(rows, left.columns, query.orderBy);
+      }
+
+      return { columns: left.columns, rows, truncated: left.truncated || right.truncated };
+    }
+
+    return runSelect(query, registry, settings);
+  }
+
+  /**
+   * ORDER BY on a UNION can only see the combined output, so it may reference
+   * an output column name or a position — not an expression over source tables,
+   * which no longer exist at this point.
+   */
+  function sortUnionRows(rows, columns, orderBy) {
+    const terms = orderBy.map((term) => {
+      const ordinal = orderOrdinal(term.expr);
+      if (ordinal !== null) {
+        if (ordinal < 1 || ordinal > columns.length) {
+          throw new SqlError(`ORDER BY ${ordinal} is out of range; the query returns ${columns.length} column(s).`);
+        }
+        return { column: columns[ordinal - 1], direction: term.direction };
+      }
+
+      if (term.expr.type === 'column' && !term.expr.table) {
+        const wanted = String(term.expr.name).toLowerCase();
+        const match = columns.find((column) => column.toLowerCase() === wanted);
+        if (match) return { column: match, direction: term.direction };
+      }
+
+      throw new SqlError('ORDER BY after a UNION must name an output column or a column position, for example ORDER BY 1.');
+    });
+
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        for (const term of terms) {
+          const result = orderValues(a.row[term.column], b.row[term.column]);
+          if (result !== 0) return term.direction === 'desc' ? -result : result;
+        }
+        return a.index - b.index;
+      })
+      .map((item) => item.row);
+  }
+
+  /**
+   * "ORDER BY 1" means the first column of the select list, not the number one.
+   * Treating it as a constant would silently produce an unsorted result.
+   */
+  function orderOrdinal(expr) {
+    if (!expr || expr.type !== 'literal') return null;
+    if (typeof expr.value !== 'number' || !Number.isInteger(expr.value)) return null;
+    return expr.value;
+  }
+
+  function resolveOrderTerm(term, names) {
+    const ordinal = orderOrdinal(term.expr);
+    if (ordinal === null) return term;
+    if (ordinal < 1 || ordinal > names.length) {
+      throw new SqlError(`ORDER BY ${ordinal} is out of range; the query returns ${names.length} column(s).`);
+    }
+    return { expr: { type: 'column', table: null, name: names[ordinal - 1] }, direction: term.direction };
+  }
+
+  function resolveSource(source, registry, settings) {
+    if (source.kind === 'subquery') {
+      const result = runQuery(source.query, registry, settings);
+      return makeTable(source.alias, result.columns, result.rows, result.decimalColumns);
+    }
+
+    const lookupNames = [source.name.toLowerCase()];
+    if (source.qualifier) lookupNames.unshift(`${source.qualifier}.${source.name}`.toLowerCase());
+
+    for (const key of lookupNames) {
+      const entry = registry.get(key);
+      if (entry) {
+        const decimals = toDecimalSet(entry.decimalColumns);
+        return entry.columns && entry.columns.length
+          ? makeTable(source.alias, entry.columns, entry.rows, decimals)
+          : tableFromRows(source.alias, entry.rows, null, decimals);
+      }
+    }
+
+    throw new SqlError(`No rows were loaded for "${source.qualifier ? `${source.qualifier}.` : ''}${source.name}".`);
+  }
+
+  function toDecimalSet(value) {
+    if (value instanceof Set) return new Set([...value].map((name) => String(name).toLowerCase()));
+    if (Array.isArray(value)) return new Set(value.map((name) => String(name).toLowerCase()));
+    return new Set();
+  }
+
+  function runSelect(select, registry, settings) {
+    if (!select.from) {
+      // SELECT without FROM, e.g. SELECT GETDATE()
+      const scope = makeScope([]);
+      const rows = [{ values: {}, windowValues: new Map() }];
+      return project(select, scope, rows, settings);
+    }
+
+    const base = resolveSource(select.from, registry, settings);
+    const tables = [base];
+
+    let rows = base.rows.map((row) => ({ values: { [base.alias.toLowerCase()]: row }, windowValues: new Map() }));
+
+    for (const join of select.joins) {
+      const right = resolveSource(join.source, registry, settings);
+      if (tables.some((table) => table.alias.toLowerCase() === right.alias.toLowerCase())) {
+        throw new SqlError(`Alias "${right.alias}" is used more than once. Give each source a distinct alias.`);
+      }
+      tables.push(right);
+      const scope = makeScope(tables);
+      rows = performJoin(rows, right, join, scope, settings);
+    }
+
+    const scope = makeScope(tables);
+
+    if (select.where) {
+      rows = rows.filter((row) => truth(evaluate(select.where, { scope, values: row.values, groupRows: null, windowValues: row.windowValues, aliases: null })) === true);
+    }
+
+    return project(select, scope, rows, settings);
+  }
+
+  /**
+   * Equality joins are hash-joined. A nested loop over two 50,000-row Data
+   * Extensions is 2.5 billion comparisons and would hang the tab, so the
+   * common case has to avoid it.
+   */
+  function analyseEquiJoin(onExpr, rightAlias) {
+    const pairs = [];
+
+    function walk(node) {
+      if (!node) return false;
+      if (node.type === 'logical' && node.operator === 'and') return walk(node.left) && walk(node.right);
+      if (node.type !== 'comparison' || node.operator !== '=') return false;
+
+      const leftRefs = referencedAliases(node.left);
+      const rightRefs = referencedAliases(node.right);
+      const target = rightAlias.toLowerCase();
+
+      const leftIsRight = leftRefs.size === 1 && leftRefs.has(target);
+      const rightIsRight = rightRefs.size === 1 && rightRefs.has(target);
+
+      if (leftIsRight && !rightRefs.has(target) && rightRefs.size > 0) {
+        pairs.push({ outer: node.right, inner: node.left });
+        return true;
+      }
+      if (rightIsRight && !leftRefs.has(target) && leftRefs.size > 0) {
+        pairs.push({ outer: node.left, inner: node.right });
+        return true;
+      }
+      return false;
+    }
+
+    return walk(onExpr) && pairs.length ? pairs : null;
+  }
+
+  function referencedAliases(node, into) {
+    const found = into || new Set();
+    if (!node || typeof node !== 'object') return found;
+    if (node.type === 'column' && node.table) found.add(String(node.table).toLowerCase());
+    for (const key of Object.keys(node)) {
+      if (key === 'type') continue;
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const item of value) referencedAliases(item, found);
+      } else if (value && typeof value === 'object') {
+        referencedAliases(value, found);
+      }
+    }
+    return found;
+  }
+
+  function performJoin(leftRows, rightTable, join, scope, settings) {
+    const alias = rightTable.alias.toLowerCase();
+    const output = [];
+    const maxRows = (settings && settings.maxIntermediateRows) || LIMITS.maxIntermediateRows;
+
+    /*
+     * The limit is enforced as rows are appended, not after the loop finishes.
+     * Checking afterwards is useless as a safety valve: by the time the count
+     * is known the tab has already allocated every one of those rows and may
+     * have run out of memory getting there.
+     */
+    function emit(row) {
+      if (output.length >= maxRows) {
+        throw new SqlError(
+          `The join produced more than ${maxRows.toLocaleString()} intermediate rows. Narrow it with a WHERE clause or a lower row limit.`
+        );
+      }
+      output.push(row);
+    }
+
+    if (join.kind === 'cross') {
+      const cost = leftRows.length * rightTable.rows.length;
+      if (cost > maxRows) {
+        throw new SqlError(
+          `A CROSS JOIN of these sources would produce ${cost.toLocaleString()} rows, above the limit of ${maxRows.toLocaleString()}. ` +
+            'Add a join condition or reduce the row limit.'
+        );
+      }
+      for (const left of leftRows) {
+        for (const right of rightTable.rows) {
+          emit({ values: Object.assign({}, left.values, { [alias]: right }), windowValues: new Map() });
+        }
+      }
+      return output;
+    }
+
+    const wantsLeft = join.kind === 'left' || join.kind === 'full';
+    const wantsRight = join.kind === 'right' || join.kind === 'full';
+    const matchedRight = wantsRight ? new Set() : null;
+
+    const equi = analyseEquiJoin(join.on, rightTable.alias);
+
+    if (equi) {
+      const buckets = new Map();
+      rightTable.rows.forEach((right, index) => {
+        const values = { [alias]: right };
+        const key = groupKey(
+          equi.map((pair) => evaluate(pair.inner, { scope, values, groupRows: null, windowValues: new Map(), aliases: null }))
+        );
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push({ right, index });
+      });
+
+      for (const left of leftRows) {
+        const key = groupKey(
+          equi.map((pair) => evaluate(pair.outer, { scope, values: left.values, groupRows: null, windowValues: new Map(), aliases: null }))
+        );
+        const candidates = buckets.get(key) || [];
+        let matched = false;
+
+        for (const candidate of candidates) {
+          const values = Object.assign({}, left.values, { [alias]: candidate.right });
+          // The hash only proves the equality parts; re-check the whole ON so a
+          // NULL key or an extra condition cannot slip through.
+          if (truth(evaluate(join.on, { scope, values, groupRows: null, windowValues: new Map(), aliases: null })) !== true) continue;
+          matched = true;
+          if (matchedRight) matchedRight.add(candidate.index);
+          emit({ values, windowValues: new Map() });
+        }
+
+        if (!matched && wantsLeft) {
+          emit({ values: Object.assign({}, left.values, { [alias]: null }), windowValues: new Map() });
+        }
+      }
+    } else {
+      const cost = leftRows.length * rightTable.rows.length;
+      if (cost > maxRows) {
+        throw new SqlError(
+          `This ON condition cannot be hash-joined, and a nested loop would need ${cost.toLocaleString()} comparisons. ` +
+            'Use a plain equality join (a.Key = b.Key) or reduce the row limit.'
+        );
+      }
+
+      for (const left of leftRows) {
+        let matched = false;
+        rightTable.rows.forEach((right, index) => {
+          const values = Object.assign({}, left.values, { [alias]: right });
+          if (truth(evaluate(join.on, { scope, values, groupRows: null, windowValues: new Map(), aliases: null })) !== true) return;
+          matched = true;
+          if (matchedRight) matchedRight.add(index);
+          emit({ values, windowValues: new Map() });
+        });
+        if (!matched && wantsLeft) {
+          emit({ values: Object.assign({}, left.values, { [alias]: null }), windowValues: new Map() });
+        }
+      }
+    }
+
+    if (wantsRight) {
+      const nullLeft = {};
+      for (const table of scope.tables) {
+        if (table.alias.toLowerCase() !== alias) nullLeft[table.alias.toLowerCase()] = null;
+      }
+      rightTable.rows.forEach((right, index) => {
+        if (matchedRight.has(index)) return;
+        emit({ values: Object.assign({}, nullLeft, { [alias]: right }), windowValues: new Map() });
+      });
+    }
+
+    return output;
+  }
+
+  function expandStars(select, scope) {
+    const columns = [];
+    for (const item of select.columns) {
+      if (!item.star) {
+        columns.push(item);
+        continue;
+      }
+      const targets = item.table
+        ? [scope.byAlias.get(String(item.table).toLowerCase())]
+        : scope.tables;
+      if (item.table && !targets[0]) throw new SqlError(`Unknown table or alias "${item.table}".`);
+      for (const table of targets) {
+        for (const column of table.columns) {
+          columns.push({
+            star: false,
+            expr: { type: 'column', table: table.alias, name: column },
+            alias: column
+          });
+        }
+      }
+    }
+    if (!columns.length) throw new SqlError('The SELECT list is empty.');
+    return columns;
+  }
+
+  function outputName(item, index, used) {
+    let name = item.alias;
+    if (!name) {
+      if (item.expr.type === 'column') name = item.expr.name;
+      else name = `Column${index + 1}`;
+    }
+    let candidate = name;
+    let suffix = 1;
+    while (used.has(candidate.toLowerCase())) {
+      suffix += 1;
+      candidate = `${name}_${suffix}`;
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
+  }
+
+  function applyWindows(select, scope, rows) {
+    const windows = [];
+    for (const item of select.columns) if (!item.star) collectWindows(item.expr, windows);
+    for (const item of select.orderBy) collectWindows(item.expr, windows);
+    if (select.having) collectWindows(select.having, windows);
+    if (!windows.length) return;
+
+    if (select.groupBy.length) {
+      throw new SqlError('Window functions cannot be combined with GROUP BY in the local engine. Use a derived table instead.');
+    }
+
+    // Deduplicate identical OVER() expressions so ROW_NUMBER() written twice
+    // is only computed once.
+    const computed = new Map();
+
+    for (const win of windows) {
+      const key = expressionKey(Object.assign({}, win, { id: null }));
+      if (computed.has(key)) {
+        const source = computed.get(key);
+        rows.forEach((row) => row.windowValues.set(win.id, row.windowValues.get(source)));
+        continue;
+      }
+      computed.set(key, win.id);
+
+      const partitions = new Map();
+      rows.forEach((row, index) => {
+        const partKey = win.partitionBy.length
+          ? groupKey(win.partitionBy.map((expr) => evaluate(expr, { scope, values: row.values, groupRows: null, windowValues: row.windowValues, aliases: null })))
+          : '';
+        if (!partitions.has(partKey)) partitions.set(partKey, []);
+        partitions.get(partKey).push({ row, index });
+      });
+
+      for (const members of partitions.values()) {
+        if (win.orderBy.length) {
+          members.sort((a, b) => {
+            for (const term of win.orderBy) {
+              const left = evaluate(term.expr, { scope, values: a.row.values, groupRows: null, windowValues: a.row.windowValues, aliases: null });
+              const right = evaluate(term.expr, { scope, values: b.row.values, groupRows: null, windowValues: b.row.windowValues, aliases: null });
+              const result = orderValues(left, right);
+              if (result !== 0) return term.direction === 'desc' ? -result : result;
+            }
+            // Stable: fall back to the original row order.
+            return a.index - b.index;
+          });
+        }
+
+        if (win.name === 'ROW_NUMBER') {
+          members.forEach((member, index) => member.row.windowValues.set(win.id, index + 1));
+          continue;
+        }
+
+        if (win.name === 'RANK' || win.name === 'DENSE_RANK') {
+          let rank = 0;
+          let dense = 0;
+          let previous = null;
+          members.forEach((member, index) => {
+            const current = win.orderBy.map((term) =>
+              evaluate(term.expr, { scope, values: member.row.values, groupRows: null, windowValues: member.row.windowValues, aliases: null })
+            );
+            const key = groupKey(current);
+            if (previous === null || key !== previous) {
+              rank = index + 1;
+              dense += 1;
+              previous = key;
+            }
+            member.row.windowValues.set(win.id, win.name === 'RANK' ? rank : dense);
+          });
+          continue;
+        }
+
+        if (win.name === 'NTILE') {
+          const bucketsExpr = win.args[0];
+          const bucketCount = Math.max(
+            1,
+            Math.floor(toNumber(evaluate(bucketsExpr, { scope, values: {}, groupRows: null, windowValues: new Map(), aliases: null })) || 1)
+          );
+          const size = members.length / bucketCount;
+          members.forEach((member, index) => member.row.windowValues.set(win.id, Math.min(bucketCount, Math.floor(index / size) + 1)));
+          continue;
+        }
+
+        // Aggregate used as a window function: one value for the whole partition.
+        const groupRows = members.map((member) => member.row);
+        const value = computeAggregate(
+          { type: 'aggregate', name: win.name, args: win.args, star: win.star, distinct: win.distinct },
+          { scope, values: {}, groupRows, windowValues: new Map(), aliases: null }
+        );
+        for (const member of members) member.row.windowValues.set(win.id, value);
+      }
+    }
+  }
+
+  function project(select, scope, rows, settings) {
+    applyWindows(select, scope, rows);
+
+    const columnItems = expandStars(select, scope);
+    const used = new Set();
+    const names = columnItems.map((item, index) => outputName(item, index, used));
+
+    const hasAggregate =
+      select.groupBy.length > 0 ||
+      columnItems.some((item) => containsAggregate(item.expr)) ||
+      (select.having && containsAggregate(select.having));
+
+    let projected;
+
+    if (hasAggregate) {
+      const groups = new Map();
+
+      if (!select.groupBy.length) {
+        // Whole result set is a single group, even when there are no rows —
+        // SELECT COUNT(*) FROM Empty must return 0, not nothing.
+        groups.set('', { key: [], rows });
+      } else {
+        for (const row of rows) {
+          const keyValues = select.groupBy.map((expr) =>
+            evaluate(expr, { scope, values: row.values, groupRows: null, windowValues: row.windowValues, aliases: null })
+          );
+          const key = groupKey(keyValues);
+          if (!groups.has(key)) groups.set(key, { key: keyValues, rows: [] });
+          groups.get(key).rows.push(row);
+        }
+      }
+
+      projected = [];
+      for (const group of groups.values()) {
+        const representative = group.rows[0] || { values: {}, windowValues: new Map() };
+        const ctx = {
+          scope,
+          values: representative.values,
+          groupRows: group.rows,
+          windowValues: representative.windowValues,
+          aliases: null
+        };
+
+        if (select.having && truth(evaluate(select.having, ctx)) !== true) continue;
+
+        const out = {};
+        columnItems.forEach((item, index) => {
+          out[names[index]] = evaluate(item.expr, ctx);
+        });
+        projected.push({ out, ctx });
+      }
+    } else {
+      projected = rows.map((row) => {
+        const ctx = { scope, values: row.values, groupRows: null, windowValues: row.windowValues, aliases: null };
+        const out = {};
+        columnItems.forEach((item, index) => {
+          out[names[index]] = evaluate(item.expr, ctx);
+        });
+        return { out, ctx };
+      });
+
+      if (select.having) {
+        throw new SqlError('HAVING requires GROUP BY or an aggregate in the SELECT list.');
+      }
+    }
+
+    if (select.distinct) {
+      const seen = new Set();
+      const unique = [];
+      for (const entry of projected) {
+        const key = groupKey(names.map((name) => entry.out[name]));
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(entry);
+      }
+      projected = unique;
+    }
+
+    if (select.orderBy.length) {
+      const terms = select.orderBy.map((term) => resolveOrderTerm(term, names));
+      const decorated = projected.map((entry, index) => {
+        const aliases = new Map();
+        names.forEach((name) => aliases.set(name.toLowerCase(), entry.out[name]));
+        return { entry, index, aliases };
+      });
+
+      decorated.sort((a, b) => {
+        for (const term of terms) {
+          const left = evaluate(term.expr, Object.assign({}, a.entry.ctx, { aliases: a.aliases }));
+          const right = evaluate(term.expr, Object.assign({}, b.entry.ctx, { aliases: b.aliases }));
+          const result = orderValues(left, right);
+          if (result !== 0) return term.direction === 'desc' ? -result : result;
+        }
+        return a.index - b.index;
+      });
+
+      projected = decorated.map((item) => item.entry);
+    }
+
+    let truncated = false;
+
+    if (select.top !== null) {
+      const limit = select.topPercent
+        ? Math.ceil((projected.length * select.top) / 100)
+        : select.top;
+      projected = projected.slice(0, limit);
+    }
+
+    if (projected.length > settings.maxOutputRows) {
+      projected = projected.slice(0, settings.maxOutputRows);
+      truncated = true;
+    }
+
+    return { columns: names, rows: projected.map((entry) => entry.out), truncated };
+  }
+
+  // ==========================================================================
+  // Static analysis helpers used by the runner and the UI
+  // ==========================================================================
+
+  /**
+   * Every base table the statement reads, with CTE names removed. This is what
+   * the runner turns into Data Extension lookups.
+   * @returns {Array<{name:string, qualifier:string|null, key:string}>}
+   */
+  function tableReferences(statement) {
+    const cteNames = new Set((statement.ctes || []).map((cte) => cte.name.toLowerCase()));
+    const found = new Map();
+
+    function walkQuery(query) {
+      if (!query) return;
+      if (query.type === 'union') {
+        walkQuery(query.left);
+        walkQuery(query.right);
+        return;
+      }
+      walkSource(query.from);
+      for (const join of query.joins || []) walkSource(join.source);
+    }
+
+    function walkSource(source) {
+      if (!source) return;
+      if (source.kind === 'subquery') {
+        walkQuery(source.query);
+        return;
+      }
+      const key = (source.qualifier ? `${source.qualifier}.${source.name}` : source.name).toLowerCase();
+      if (cteNames.has(key)) return;
+      if (!found.has(key)) found.set(key, { name: source.name, qualifier: source.qualifier, key });
+    }
+
+    for (const cte of statement.ctes || []) walkQuery(cte.query);
+    walkQuery(statement.query);
+
+    return [...found.values()];
+  }
+
+  /**
+   * Column names read from each table, so the runner can tell the user which
+   * fields a query touches. Unqualified columns are reported under "*".
+   */
+  function analyse(sql) {
+    const statement = parse(sql);
+    return { statement, tables: tableReferences(statement) };
+  }
+
+  return {
+    parse,
+    execute,
+    analyse,
+    tableReferences,
+    tokenize,
+    SqlError,
+    LIMITS,
+    // exported for tests and for the runner's type coercion
+    compareValues,
+    orderValues,
+    likeMatch,
+    toNumber,
+    toDate,
+    toText
+  };
+});
+
+</script>
+
+<script>
+(function () {
+  'use strict';
+
+  var datasets = [];
+  var nextId = 1;
+
+  var datasetList = document.getElementById('datasetList');
+  var addDatasetBtn = document.getElementById('addDatasetBtn');
+  var sqlInput = document.getElementById('sqlInput');
+  var runBtn = document.getElementById('runBtn');
+  var resultArea = document.getElementById('resultArea');
+
+  function parseCsv(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    var rows = [];
+    var row = [];
+    var field = '';
+    var inQuotes = false;
+
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else {
+          field += c;
+        }
+        continue;
+      }
+      if (c === '"') { inQuotes = true; continue; }
+      if (c === ',') { row.push(field); field = ''; continue; }
+      if (c === '\r') { continue; }
+      if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
+      field += c;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();
+    return rows;
+  }
+
+  function rowsToTable(rows) {
+    if (!rows.length) return { columns: [], rows: [] };
+    var columns = rows[0];
+    var dataRows = rows.slice(1).map(function (r) {
+      var obj = {};
+      columns.forEach(function (col, idx) {
+        var value = r[idx];
+        obj[col] = value === undefined || value === '' ? null : value;
+      });
+      return obj;
+    });
+    return { columns: columns, rows: dataRows };
+  }
+
+  function createDatasetRow(id) {
+    var row = document.createElement('div');
+    row.className = 'dataset-row';
+    row.dataset.id = id;
+
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Table name (e.g. Customers)';
+    nameInput.addEventListener('input', function () {
+      var ds = datasets.find(function (d) { return d.id === id; });
+      if (ds) ds.name = nameInput.value.trim();
+    });
+
+    var fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.csv,text/csv';
+
+    var status = document.createElement('span');
+    status.className = 'dataset-status';
+    status.textContent = 'No file loaded.';
+
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        try {
+          var rows = parseCsv(String(reader.result));
+          var table = rowsToTable(rows);
+          var ds = datasets.find(function (d) { return d.id === id; });
+          if (ds) {
+            ds.columns = table.columns;
+            ds.rows = table.rows;
+            if (!ds.name) {
+              ds.name = file.name.replace(/\.csv$/i, '');
+              nameInput.value = ds.name;
+            }
+          }
+          status.className = 'dataset-status ok';
+          status.textContent = table.rows.length + ' rows, ' + table.columns.length + ' columns loaded from ' + file.name + '.';
+        } catch (err) {
+          status.className = 'dataset-status error';
+          status.textContent = 'Could not read this file: ' + err.message;
+        }
+      };
+      reader.onerror = function () {
+        status.className = 'dataset-status error';
+        status.textContent = 'Could not read this file.';
+      };
+      reader.readAsText(file);
+    });
+
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'danger-text';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', function () {
+      datasets = datasets.filter(function (d) { return d.id !== id; });
+      row.remove();
+    });
+
+    row.appendChild(nameInput);
+    row.appendChild(fileInput);
+    row.appendChild(status);
+    row.appendChild(removeBtn);
+    return row;
+  }
+
+  function addDataset() {
+    var id = nextId++;
+    datasets.push({ id: id, name: '', columns: [], rows: [] });
+    datasetList.appendChild(createDatasetRow(id));
+  }
+
+  addDatasetBtn.addEventListener('click', addDataset);
+  addDataset();
+  addDataset();
+
+  function clearResult() {
+    resultArea.innerHTML = '';
+  }
+
+  function showBanner(kind, message) {
+    var banner = document.createElement('div');
+    banner.className = 'banner ' + kind;
+    banner.textContent = message;
+    resultArea.appendChild(banner);
+  }
+
+  function renderTable(result) {
+    var meta = document.createElement('div');
+    meta.className = 'result-meta';
+    meta.textContent = result.rows.length + ' row' + (result.rows.length === 1 ? '' : 's') + ', ' + result.columns.length + ' column' + (result.columns.length === 1 ? '' : 's') + '.';
+    resultArea.appendChild(meta);
+
+    if (result.truncated) {
+      showBanner('warn', 'Result was truncated by the configured row limit.');
+    }
+
+    if (!result.rows.length) {
+      var note = document.createElement('p');
+      note.className = 'empty-note';
+      note.textContent = 'Query ran successfully but returned no rows.';
+      resultArea.appendChild(note);
+      return;
+    }
+
+    var scroll = document.createElement('div');
+    scroll.className = 'result-scroll';
+    var table = document.createElement('table');
+
+    var thead = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    result.columns.forEach(function (col) {
+      var th = document.createElement('th');
+      th.textContent = col;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    result.rows.forEach(function (row) {
+      var tr = document.createElement('tr');
+      result.columns.forEach(function (col) {
+        var td = document.createElement('td');
+        var value = row[col];
+        td.textContent = value === null || value === undefined ? '' : String(value);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    scroll.appendChild(table);
+    resultArea.appendChild(scroll);
+  }
+
+  function runQuery() {
+    clearResult();
+
+    if (typeof SqlEngine === 'undefined') {
+      showBanner('error', 'The SQL engine did not load. Check the browser console for details.');
+      return;
+    }
+
+    var sql = sqlInput.value.trim();
+    if (!sql) {
+      showBanner('info', 'Write a SELECT statement above and click Run query.');
+      return;
+    }
+
+    var sources = {};
+    datasets.forEach(function (ds) {
+      if (ds.name && ds.rows) sources[ds.name] = { columns: ds.columns, rows: ds.rows };
+    });
+
+    try {
+      var statement = SqlEngine.parse(sql);
+      var result = SqlEngine.execute(statement, sources);
+      renderTable(result);
+    } catch (err) {
+      if (err instanceof SqlEngine.SqlError) {
+        var position = typeof err.position === 'number' ? ' (position ' + err.position + ')' : '';
+        showBanner('error', 'SQL error' + position + ': ' + err.message);
+      } else {
+        showBanner('error', 'Unexpected error: ' + err.message);
+      }
+    }
+  }
+
+  runBtn.addEventListener('click', runQuery);
+  sqlInput.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runQuery();
+  });
+})();
+</script>
+</body>
+</html>
