@@ -1,10 +1,35 @@
 # SFMC SQL Engine
 
-A backwards-engineered, read-only implementation of the SQL engine behind Salesforce Marketing Cloud's Query Studio.
+A backwards-engineered, read-only implementation of the SQL engine behind Salesforce Marketing Cloud's Query Studio, built as a learning tool for understanding how that SQL dialect actually behaves.
 
-SFMC has no API that takes a SQL statement and returns rows. The only official way to run a `SELECT` is through Query Studio, which creates a Query Activity, runs it, writes the result to a temporary Data Extension, and deletes it afterwards. This project reproduces that engine's read behaviour directly in JavaScript: given row data and a T-SQL statement, it parses and evaluates the query itself, with no Query Activity, no temporary Data Extension, and no writes of any kind.
+Query Studio gives you almost no insight into *why* a query behaves the way it does. It has no API, no step-through debugger, and testing an idea means creating a Query Activity, running it, and inspecting a temporary Data Extension, three write operations just to check a `WHERE` clause. This project takes the opposite approach: it reimplements the parser and evaluator for that SQL dialect from scratch, in plain, readable JavaScript, so the *logic* is inspectable instead of hidden behind a black box.
 
-It is a single, dependency-free file (`sqlengine.js`) containing a tokenizer, a recursive-descent parser, and a tree-walking evaluator.
+It is a single, dependency-free file (`sqlengine.js`) containing a tokenizer, a recursive-descent parser, and a tree-walking evaluator, plus a small browser-based sandbox (`cloudpage.html`) for trying it out interactively.
+
+## Why this is useful for learning
+
+- **See the parts separately.** The tokenizer, parser, and evaluator are distinct, commented stages, so you can read exactly how `SELECT ... FROM ... WHERE ...` turns into tokens, then an AST, then a result, instead of treating SQL execution as magic.
+- **The comments explain *why*, not just *what*.** Tricky T-SQL behaviour, like `DATEADD` clamping at month-end, integer division on `/`, or three-valued `NULL` logic, is called out with the reasoning behind it, not just the implementation.
+- **Test SQL ideas without touching Marketing Cloud.** Export a Data Extension to CSV, load it into the sandbox, and experiment with joins, window functions, or date math risk-free, no Query Activity required.
+- **A worked example of writing a parser.** Beyond SFMC, this is a self-contained example of a hand-written recursive-descent SQL parser and evaluator, useful as a reference for anyone learning how query engines work internally.
+
+## Files in this repo
+
+| File | Purpose |
+|---|---|
+| `sqlengine.js` | The engine itself: `parse()`, `execute()`, `analyse()`, and supporting helpers. Usable as a browser script or a CommonJS module. |
+| `cloudpage.html` | A self-contained, single-file sandbox UI: upload one or more CSVs, run SQL against them, and read an in-page SQL reference. No build step, no dependencies. |
+
+## Try it
+
+Open `cloudpage.html` directly in a browser (double-click it, no server needed), or paste its contents into an SFMC CloudPage:
+
+1. Add one or more datasets, giving each a table name and uploading a CSV (e.g. an exported Data Extension).
+2. Write a `SELECT` in the query box, referencing your dataset names in `FROM`/`JOIN`.
+3. Run it, inspect the result, and optionally download it as CSV.
+4. Check the **About / SQL reference** tab for a full breakdown of the supported syntax.
+
+Everything runs client-side in the page; nothing is uploaded anywhere, and it never connects to Marketing Cloud.
 
 ## Design properties
 
