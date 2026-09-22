@@ -29,6 +29,8 @@ Open `cloudpage.html` directly in a browser (double-click it, no server needed),
 3. Run it, inspect the result, and optionally download it as CSV.
 4. Check the **About / SQL reference** tab for a full breakdown of the supported syntax.
 
+`cloudpage.html` is plug-and-play in a CloudPage: it's a single file with no external dependencies, no build step, and no server-side code (AMPscript/SSJS), so pasting its content straight into a CloudPage's HTML editor and publishing it is all that's needed to get it running.
+
 Everything runs client-side in the page; nothing is uploaded anywhere, and it never connects to Marketing Cloud.
 
 Don't have a CSV handy? [`sample-data/`](sample-data) has three small, clearly synthetic training datasets (`Customers`, `Products`, `Orders`) plus a list of example queries to try against them.
