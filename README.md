@@ -31,6 +31,8 @@ Open `cloudpage.html` directly in a browser (double-click it, no server needed),
 
 Everything runs client-side in the page; nothing is uploaded anywhere, and it never connects to Marketing Cloud.
 
+Don't have a CSV handy? [`sample-data/`](sample-data) has three small, clearly synthetic training datasets (`Customers`, `Products`, `Orders`) plus a list of example queries to try against them.
+
 ## Design properties
 
 - **No `eval()`, no `new Function()`, no WASM.** The parser is hand-written, so there is no dynamic code-execution path.

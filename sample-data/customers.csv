@@ -1,0 +1,16 @@
+CustomerID,CustomerName,Country,SignupDate,IsVIP
+1,Anna Poulsen,Denmark,2023-01-14,1
+2,Lars Jensen,Denmark,2023-02-02,0
+3,Emma Nielsen,Denmark,2023-03-19,1
+4,Mikkel Sørensen,Denmark,2023-04-05,0
+5,Sofie Kristensen,Denmark,2023-05-22,0
+6,Johan Andersson,Sweden,2023-01-30,1
+7,Elin Karlsson,Sweden,2023-06-11,0
+8,Oskar Lindqvist,Sweden,2023-07-08,0
+9,Ida Berg,Norway,2023-02-17,1
+10,Henrik Solberg,Norway,2023-08-25,0
+11,Maria Hansen,Denmark,2023-09-01,0
+12,Peter Møller,Denmark,,0
+13,Freja Ærø,Denmark,2023-10-12,1
+14,Noah Eriksson,Sweden,2023-11-03,0
+15,Astrid Vik,Norway,2023-12-20,0
